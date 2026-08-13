@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+  <title>Atomica</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="sidebar">
+    <div id="brand">
+      <img id="brandLogo" src="logo.png" alt="Atomica" draggable="false" />
+      <div>
+        <h1>ATOMICA</h1>
+        <div class="sub">sample star map</div>
+      </div>
+    </div>
+
+    <section>
+      <div class="row">
+        <button id="addFolder" class="primary">+ Add folder</button>
+        <button id="rescanBtn" title="Rescan folders for new or changed samples">⟳ Rescan</button>
+      </div>
+      <ul id="folderList"></ul>
+      <label class="check">
+        <input type="checkbox" id="useEmb" />
+        <span>AI similarity (CLAP)</span>
+      </label>
+      <div class="hint">Downloads a ~90 MB model on first analysis. Clusters by how samples <i>sound</i>, not just their stats.</div>
+    </section>
+
+    <section>
+      <h2>Mapping</h2>
+      <div class="tabs">
+        <button id="tabSim" class="tab active">Similarity</button>
+        <button id="tabAxes" class="tab">Axes</button>
+      </div>
+
+      <div id="simPanel">
+        <label class="field">Method
+          <select id="method">
+            <option value="umap">UMAP (clusters)</option>
+            <option value="pca">PCA (fast, linear)</option>
+          </select>
+        </label>
+        <label class="field slider">Neighbors <span id="nNeighborsVal"></span>
+          <input type="range" id="nNeighbors" min="3" max="60" step="1" />
+        </label>
+        <label class="field slider">Min distance <span id="minDistVal"></span>
+          <input type="range" id="minDist" min="0" max="0.95" step="0.01" />
+        </label>
+        <h3>Feature weights</h3>
+        <div id="weights"></div>
+        <button id="applyMap" class="primary wide">Recompute map</button>
+      </div>
+
+      <div id="axesPanel" hidden>
+        <label class="field">X axis <select id="axisX"></select></label>
+        <label class="field">Y axis <select id="axisY"></select></label>
+        <div class="hint">Axes update instantly — no recompute needed.</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Display</h2>
+      <label class="field">Color by <select id="colorBy"></select></label>
+      <label class="field">Size by
+        <select id="sizeBy">
+          <option value="uniform">Uniform</option>
+          <option value="loudness">Loudness</option>
+          <option value="duration">Duration</option>
+          <option value="brightness">Brightness</option>
+        </select>
+      </label>
+      <input type="text" id="search" placeholder="Filter by name, folder, or category…" />
+      <label class="field slider">Volume <span id="volumeVal"></span>
+        <input type="range" id="volume" min="0" max="100" step="1" />
+      </label>
+    </section>
+
+    <div id="progressWrap" hidden>
+      <div id="progressTrack"><div id="progressBar"></div></div>
+      <div id="progressText"></div>
+    </div>
+  </div>
+
+  <div id="mapWrap">
+    <div id="viewBar">
+      <button id="viewMap" class="tab active">Map</button>
+      <button id="viewList" class="tab">List</button>
+    </div>
+    <canvas id="map"></canvas>
+    <div id="listWrap" hidden>
+      <div id="listHead">
+        <span data-sort="waveform">Waveform</span>
+        <span data-sort="duration">Length</span>
+        <span data-sort="name" class="sort-active">Name</span>
+        <span data-sort="category">Category</span>
+      </div>
+      <div id="listScroll">
+        <div id="listSpacer"></div>
+        <div id="listRows"></div>
+      </div>
+    </div>
+    <div id="tooltip" hidden></div>
+    <div id="empty" hidden>
+      <div class="glyph">✦</div>
+      <div>Add a sample folder to chart your library</div>
+    </div>
+    <div id="notice" hidden></div>
+  </div>
+
+  <div id="statusbar">
+    <span id="statusLeft"></span>
+    <span id="statusRight">click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;drag star&nbsp;=&nbsp;drop into DAW&nbsp;&nbsp;·&nbsp;&nbsp;right-click&nbsp;=&nbsp;show in Explorer&nbsp;&nbsp;·&nbsp;&nbsp;wheel&nbsp;=&nbsp;zoom</span>
+  </div>
+
+  <script src="starmap.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

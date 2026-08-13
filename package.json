@@ -1,0 +1,22 @@
+{
+  "name": "atomica",
+  "productName": "Atomica",
+  "version": "0.1.0",
+  "description": "Star-map sample browser with fully editable mapping",
+  "main": "src/main/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.3.0",
+    "audio-decode": "^2.2.0",
+    "fft.js": "^4.0.4",
+    "mpg123-decoder": "^1.0.3",
+    "umap-js": "^1.4.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}
