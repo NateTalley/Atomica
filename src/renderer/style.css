@@ -45,26 +45,14 @@ body {
   gap: 18px;
 }
 #brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  display: block;
 }
 #brandLogo {
-  width: 48px;
-  height: 48px;
+  width: 100%;
+  height: auto;
+  display: block;
   object-fit: contain;
-  flex-shrink: 0;
 }
-#brand h1 {
-  font-size: 20px;
-  letter-spacing: 7px;
-  font-weight: 600;
-  background: linear-gradient(90deg, var(--accent), var(--accent-hot));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-#brand .sub { color: var(--dim); font-size: 11px; letter-spacing: 3px; }
 
 section h2 {
   font-size: 11px;
@@ -142,7 +130,49 @@ input[type="range"] {
 
 #search { width: 100%; margin-top: 6px; margin-bottom: 8px; }
 
+#tagFilters { margin-top: 4px; }
+#tagFilters h3 { margin-top: 8px; }
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 8px;
+}
+.tag-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-edge);
+  background: #1a140e;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+}
+.tag-chip:hover { border-color: var(--accent); color: var(--text); }
+#filterGenre .tag-chip { border-color: rgba(255, 90, 31, 0.35); }
+#filterGenre .tag-chip:hover { border-color: var(--accent-hot); }
+.tag-chip.on {
+  opacity: 1;
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(255, 193, 7, 0.16);
+  box-shadow: 0 0 8px rgba(255, 193, 7, 0.2);
+}
+#filterGenre .tag-chip.on {
+  border-color: var(--accent-hot);
+  background: rgba(255, 90, 31, 0.18);
+  box-shadow: 0 0 8px rgba(255, 90, 31, 0.22);
+}
+.tag-chip .n { color: var(--dim); margin-left: 4px; font-size: 10px; }
+#clearFilters { width: 100%; margin-top: 8px; font-size: 11px; }
+
 #progressWrap { margin-top: auto; }
+#progressLogo {
+  width: 92px;
+  height: auto;
+  display: block;
+  margin: 0 auto 10px;
+}
 #progressTrack { height: 4px; background: #1a140e; border-radius: 2px; overflow: hidden; }
 #progressBar {
   height: 100%;
@@ -230,7 +260,7 @@ input[type="range"] {
 }
 #listHead {
   display: grid;
-  grid-template-columns: 168px 72px 1fr 120px;
+  grid-template-columns: 132px 56px 1fr 64px 40px minmax(110px, 1.1fr);
   gap: 8px;
   padding: 0 10px;
   height: 28px;
@@ -259,7 +289,7 @@ input[type="range"] {
 }
 .list-row {
   display: grid;
-  grid-template-columns: 168px 72px 1fr 120px;
+  grid-template-columns: 132px 56px 1fr 64px 40px minmax(110px, 1.1fr);
   gap: 8px;
   padding: 0 10px;
   height: 36px;
@@ -269,7 +299,7 @@ input[type="range"] {
 }
 .list-row:hover { background: rgba(255, 193, 7, 0.06); }
 .list-row.playing { background: rgba(255, 90, 31, 0.12); }
-.list-row canvas { width: 160px; height: 28px; display: block; }
+.list-row canvas { width: 124px; height: 28px; display: block; }
 .list-dur {
   color: var(--dim);
   font-variant-numeric: tabular-nums;
@@ -280,6 +310,40 @@ input[type="range"] {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+}
+.list-kind, .list-bpm {
+  font-size: 11px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.list-kind.loop { color: var(--accent); }
+.list-tags {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+.list-tags span {
+  flex: 0 1 auto;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-edge);
+  color: var(--text);
+  background: rgba(255, 193, 7, 0.08);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50%;
+  cursor: pointer;
+}
+.list-tags span.dim {
+  color: var(--dim);
+  background: transparent;
+}
+.list-tags span.genre {
+  border-color: rgba(255, 90, 31, 0.4);
+  color: var(--accent-hot);
 }
 .list-cat {
   font-size: 11px;

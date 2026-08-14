@@ -282,7 +282,7 @@ class Starmap {
       e.preventDefault();
       const factor = Math.pow(1.0016, -e.deltaY);
       const before = this.screenToWorld(e.offsetX, e.offsetY);
-      this.view.scale = Math.min(Math.max(this.view.scale * factor, this.baseScale * 0.2), this.baseScale * 60);
+      this.view.scale = Math.min(Math.max(this.view.scale * factor, this.baseScale * 0.72), this.baseScale * 60);
       const after = this.screenToWorld(e.offsetX, e.offsetY);
       this.view.cx += before.x - after.x;
       this.view.cy += before.y - after.y;

@@ -9,11 +9,7 @@
 <body>
   <div id="sidebar">
     <div id="brand">
-      <img id="brandLogo" src="logo.png" alt="Atomica" draggable="false" />
-      <div>
-        <h1>ATOMICA</h1>
-        <div class="sub">sample star map</div>
-      </div>
+      <img id="brandLogo" src="header-logo.png" alt="ATOMICA — what music's made of" draggable="false" />
     </div>
 
     <section>
@@ -72,13 +68,23 @@
           <option value="brightness">Brightness</option>
         </select>
       </label>
-      <input type="text" id="search" placeholder="Filter by name, folder, or category…" />
+      <input type="text" id="search" placeholder="Search name, folder, tag…" />
+      <div id="tagFilters">
+        <h3 hidden>Type</h3>
+        <div id="filterKind" class="tag-row" hidden></div>
+        <h3 hidden>Instrument</h3>
+        <div id="filterInstr" class="tag-row" hidden></div>
+        <h3 hidden>Genre</h3>
+        <div id="filterGenre" class="tag-row" hidden></div>
+        <button id="clearFilters" hidden>Clear tag filters</button>
+      </div>
       <label class="field slider">Volume <span id="volumeVal"></span>
         <input type="range" id="volume" min="0" max="100" step="1" />
       </label>
     </section>
 
     <div id="progressWrap" hidden>
+      <img id="progressLogo" src="logo-spin.gif" alt="" draggable="false" />
       <div id="progressTrack"><div id="progressBar"></div></div>
       <div id="progressText"></div>
     </div>
@@ -95,7 +101,9 @@
         <span data-sort="waveform">Waveform</span>
         <span data-sort="duration">Length</span>
         <span data-sort="name" class="sort-active">Name</span>
-        <span data-sort="category">Category</span>
+        <span data-sort="kind">Type</span>
+        <span data-sort="bpm">BPM</span>
+        <span data-sort="tags">Tags</span>
       </div>
       <div id="listScroll">
         <div id="listSpacer"></div>

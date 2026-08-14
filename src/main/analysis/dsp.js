@@ -291,10 +291,38 @@ function parseWav(buf, maxSec) {
 }
 
 function mixToMono(channels, length) {
-  const out = new Float32Array(length);
-  for (const chData of channels) for (let i = 0; i < length; i++) out[i] += chData[i];
-  if (channels.length > 1) for (let i = 0; i < length; i++) out[i] /= channels.length;
+  const chans = (channels || []).filter((c) => c && c.length);
+  if (!chans.length || !length) return new Float32Array(0);
+  const n = Math.min(length, ...chans.map((c) => c.length));
+  const out = new Float32Array(n);
+  for (const chData of chans) for (let i = 0; i < n; i++) out[i] += chData[i];
+  if (chans.length > 1) for (let i = 0; i < n; i++) out[i] /= chans.length;
   return out;
+}
+
+function isFlacMagic(buf) {
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer, buf.byteOffset, Math.min(4, buf.byteLength));
+  return u8.length >= 4 && u8[0] === 0x66 && u8[1] === 0x4c && u8[2] === 0x61 && u8[3] === 0x43; // fLaC
+}
+
+// Native FLAC (and Ogg-FLAC). audio-decode calls decoder.decode() without flush,
+// which can yield empty/truncated PCM; decodeFile() parses the whole file.
+async function decodeFlac(buf, maxSec) {
+  const { FLACDecoder } = await import('@wasm-audio-decoders/flac');
+  const dec = new FLACDecoder();
+  await dec.ready;
+  try {
+    const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const res = await dec.decodeFile(u8);
+    const chans = res && res.channelData;
+    if (!chans || !chans.length || !res.samplesDecoded) throw new Error('FLAC produced no audio');
+    const sr = res.sampleRate;
+    if (!sr) throw new Error('FLAC missing sample rate');
+    const frames = Math.min(res.samplesDecoded, Math.ceil(maxSec * sr));
+    return { sr, data: mixToMono(chans, frames), fullDuration: res.samplesDecoded / sr };
+  } finally {
+    dec.free();
+  }
 }
 
 // MP3/MPEG payload wrapped in a WAV container: hand the raw bitstream to the
@@ -338,13 +366,20 @@ async function decodeToMono(filePath, maxSec) {
       } catch (e2) { wavError = e2; }
     }
   }
+  if (ext === '.flac' || isFlacMagic(buf)) {
+    try {
+      return await decodeFlac(buf, maxSec);
+    } catch (e) {
+      throw new Error(`FLAC decode failed: ${e.message || e}`);
+    }
+  }
   const { default: decodeAudio } = await import('audio-decode');
   let ab;
   try {
     ab = await decodeAudio(buf);
   } catch (e) {
-    // node-wav's "Unsupported format" is far less useful than naming the codec
-    throw wavError || e;
+    const why = wavError ? `${wavError.message}; ${e.message || e}` : (e.message || e);
+    throw new Error(String(why));
   }
   const sr = ab.sampleRate;
   const frames = Math.min(ab.length, Math.ceil(maxSec * sr));
@@ -470,6 +505,161 @@ function pitchTrack(data, sr) {
   return semis[Math.floor(semis.length / 2)];
 }
 
+// ---------------------------------------------------------------- loop / BPM
+
+function parseNameHints(filePath) {
+  const base = path.basename(filePath, path.extname(filePath)).toLowerCase();
+  const folder = path.basename(path.dirname(filePath)).toLowerCase();
+  const blob = `${folder} ${base}`;
+  const spaced = blob.replace(/[._-]+/g, ' ');
+  let namedBpm = null;
+  const re = /(?:^|[^0-9])(\d{2,3})\s*bpm\b|\bbpm\s*[_-]?(\d{2,3})(?:[^0-9]|$)/gi;
+  let m;
+  while ((m = re.exec(spaced))) {
+    const b = parseInt(m[1] || m[2], 10);
+    if (b >= 50 && b <= 220) namedBpm = b;
+  }
+  const isLoopName = /\b(loops?|lps?)\b/.test(spaced);
+  const isOneshotName = /\b(one\s*shots?|1\s*shots?)\b/.test(spaced);
+  return { namedBpm, isLoopName, isOneshotName };
+}
+
+function foldBpm(bpm) {
+  if (!Number.isFinite(bpm) || bpm <= 0) return null;
+  while (bpm < 70 && bpm * 2 <= 200) bpm *= 2;
+  while (bpm > 175 && bpm / 2 >= 70) bpm /= 2;
+  if (bpm < 50 || bpm > 220) return null;
+  return bpm;
+}
+
+function beatFit(duration, bpm) {
+  if (!bpm || duration < 0.4) return 0;
+  const beats = duration * bpm / 60;
+  const nearest = Math.round(beats);
+  if (nearest < 1) return 0;
+  const err = Math.abs(beats - nearest);
+  return err < 0.08 ? 1 : Math.max(0, 1 - err * 5);
+}
+
+function onsetEnvelope(data, hop) {
+  const n = Math.max(1, Math.floor(data.length / hop));
+  const env = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    const start = i * hop;
+    const end = Math.min(start + hop, data.length);
+    for (let j = start + 1; j < end; j++) {
+      const d = data[j] - data[j - 1];
+      s += d * d;
+    }
+    env[i] = Math.sqrt(s / Math.max(1, end - start));
+  }
+  return env;
+}
+
+export function detectRhythm(data, sr, fullDuration, filePath, frameRms, hop) {
+  const hints = parseNameHints(filePath);
+  const n = frameRms.length;
+  const frameDur = hop / sr;
+  const maxR = frameRms.reduce((a, b) => (b > a ? b : a), 0) || 1e-12;
+  const cut = Math.max(1, Math.floor(n * 0.25));
+  let head = 0, tail = 0, active = 0;
+  for (let i = 0; i < n; i++) {
+    if (frameRms[i] > 0.12 * maxR) active++;
+    if (i < cut) head += frameRms[i];
+    if (i >= n - cut) tail += frameRms[i];
+  }
+  const sustain = (tail / cut) / (head / cut + 1e-12);
+  const activeFrac = n ? active / n : 0;
+
+  let bpm = null;
+  let periodStr = 0;
+  if (n >= 24 && fullDuration >= 0.5) {
+    const env = onsetEnvelope(data, hop);
+    const nov = new Float32Array(env.length);
+    for (let i = 1; i < env.length; i++) nov[i] = Math.max(0, env[i] - env[i - 1]);
+    let mean = 0;
+    for (let i = 0; i < nov.length; i++) mean += nov[i];
+    mean /= nov.length;
+    for (let i = 0; i < nov.length; i++) nov[i] = Math.max(0, nov[i] - mean);
+    let ac0 = 0;
+    for (let i = 0; i < nov.length; i++) ac0 += nov[i] * nov[i];
+    const minLag = Math.max(2, Math.round(0.27 / frameDur)); // ~220 BPM
+    const maxLag = Math.min(nov.length - 3, Math.round(Math.min(4, fullDuration * 0.5) / frameDur));
+    let bestLag = -1, best = 0;
+    if (ac0 > 1e-12 && maxLag > minLag) {
+      for (let lag = minLag; lag <= maxLag; lag++) {
+        let s = 0;
+        const lim = nov.length - lag;
+        for (let i = 0; i < lim; i++) s += nov[i] * nov[i + lag];
+        if (s > best) { best = s; bestLag = lag; }
+      }
+      periodStr = best / ac0;
+      if (bestLag > 0) {
+        let lag = bestLag;
+        if (bestLag > minLag && bestLag < maxLag) {
+          const y0 = (() => {
+            let s = 0;
+            const lim = nov.length - (bestLag - 1);
+            for (let i = 0; i < lim; i++) s += nov[i] * nov[i + bestLag - 1];
+            return s;
+          })();
+          const y2 = (() => {
+            let s = 0;
+            const lim = nov.length - (bestLag + 1);
+            for (let i = 0; i < lim; i++) s += nov[i] * nov[i + bestLag + 1];
+            return s;
+          })();
+          const denom = y0 - 2 * best + y2;
+          if (Math.abs(denom) > 1e-12) lag += Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / denom));
+        }
+        bpm = foldBpm(60 / (lag * frameDur));
+      }
+    }
+  }
+
+  if (hints.namedBpm) {
+    if (!bpm || Math.abs(foldBpm(bpm * 2) - hints.namedBpm) < 4 || Math.abs(foldBpm(bpm / 2) - hints.namedBpm) < 4
+      || Math.abs(bpm - hints.namedBpm) < 8 || hints.isLoopName) {
+      bpm = hints.namedBpm;
+      periodStr = Math.max(periodStr, 0.35);
+    }
+  }
+
+  const fit = beatFit(fullDuration, bpm);
+  let kind;
+  if (hints.isOneshotName && !hints.isLoopName && !hints.namedBpm) kind = 'oneshot';
+  else if (hints.isLoopName || hints.namedBpm) kind = 'loop';
+  else if (fullDuration < 0.4) kind = 'oneshot';
+  else if (fullDuration < 0.85 && sustain < 0.4 && periodStr < 0.22) kind = 'oneshot';
+  else if (periodStr >= 0.26 && fullDuration >= 0.65) kind = 'loop';
+  else if (fit > 0.75 && bpm && fullDuration >= 0.6) kind = 'loop';
+  else if (sustain >= 0.55 && activeFrac >= 0.72 && fullDuration >= 1.15) kind = 'loop';
+  else kind = 'oneshot';
+
+  if (kind !== 'loop') bpm = null;
+  else if (bpm) bpm = Math.round(bpm);
+
+  return { kind, bpm };
+}
+
+export async function rhythmFromFile(filePath) {
+  const { sr, data, fullDuration } = await decodeToMono(filePath, MAX_ANALYZE_SEC);
+  const N = 2048, hop = 1024;
+  const nFrames = Math.max(1, Math.floor((data.length - N) / hop) + 1);
+  const frameRms = [];
+  for (let fr = 0; fr < nFrames; fr++) {
+    const start = fr * hop;
+    let rms = 0;
+    for (let i = 0; i < N; i++) {
+      const s = start + i < data.length ? data[start + i] : 0;
+      rms += s * s;
+    }
+    frameRms.push(Math.sqrt(rms / N));
+  }
+  return detectRhythm(data, sr, fullDuration, filePath, frameRms, hop);
+}
+
 // ---------------------------------------------------------------- main entry
 
 export async function analyzeFile(filePath, wantAudio48) {
@@ -579,6 +769,9 @@ export async function analyzeFile(filePath, wantAudio48) {
     pitch: pitchTrack(data, sr),
     attack,
   };
+  const rhythm = detectRhythm(data, sr, fullDuration, filePath, frameRms, hop);
+  features.kind = rhythm.kind;
+  features.bpm = rhythm.bpm;
   const mfcc = Array.from(mfccSum, (v) => (specFrames ? v / specFrames : 0));
 
   let audio48 = null;

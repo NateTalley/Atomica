@@ -12,7 +12,7 @@ const AUDIO_EXT = new Set(['.wav', '.wave', '.mp3', '.flac', '.ogg', '.oga']);
 const SCALARS = ['brightness', 'pitch', 'loudness', 'duration', 'attack', 'noisiness', 'flux', 'rolloff'];
 const PEAK_BINS = 128;
 const CACHE_VERSION = 2;
-const CATEGORIES = [
+const INSTRUMENTS = [
   { label: 'Kick', prompt: 'the sound of a kick drum' },
   { label: 'Snare', prompt: 'the sound of a snare drum' },
   { label: 'Clap', prompt: 'the sound of a clap or handclap' },
@@ -20,7 +20,7 @@ const CATEGORIES = [
   { label: 'Cymbal', prompt: 'the sound of a crash or ride cymbal' },
   { label: 'Tom', prompt: 'the sound of a tom drum' },
   { label: 'Perc', prompt: 'the sound of percussion' },
-  { label: 'Bass', prompt: 'the sound of a bass one-shot' },
+  { label: 'Bass', prompt: 'the sound of a bass' },
   { label: 'Synth', prompt: 'the sound of a synthesizer' },
   { label: 'Pad', prompt: 'the sound of a synth pad' },
   { label: 'Lead', prompt: 'the sound of a synth lead' },
@@ -29,10 +29,68 @@ const CATEGORIES = [
   { label: 'Guitar', prompt: 'the sound of a guitar' },
   { label: 'Keys', prompt: 'the sound of a piano or keyboard' },
   { label: 'Strings', prompt: 'the sound of strings' },
-  { label: 'Loop', prompt: 'the sound of a musical loop' },
+  { label: 'Brass', prompt: 'the sound of brass instruments' },
   { label: 'Atmosphere', prompt: 'the sound of an atmosphere or texture' },
 ];
-const CATEGORY_PROMPTS = CATEGORIES.map((c) => c.prompt);
+const GENRES = [
+  { label: 'Hip-hop', prompt: 'a hip hop music sample' },
+  { label: 'Trap', prompt: 'a trap music sample' },
+  { label: 'House', prompt: 'a house music sample' },
+  { label: 'Techno', prompt: 'a techno music sample' },
+  { label: 'Drum & Bass', prompt: 'a drum and bass sample' },
+  { label: 'Jungle', prompt: 'a jungle music sample' },
+  { label: 'Funk', prompt: 'a funk music sample' },
+  { label: 'Soul', prompt: 'a soul music sample' },
+  { label: 'Jazz', prompt: 'a jazz music sample' },
+  { label: 'Rock', prompt: 'a rock music sample' },
+  { label: 'Metal', prompt: 'a metal music sample' },
+  { label: 'Ambient', prompt: 'an ambient music sample' },
+  { label: 'Cinematic', prompt: 'a cinematic soundtrack sample' },
+  { label: 'Latin', prompt: 'a latin music sample' },
+  { label: 'Reggae', prompt: 'a reggae or dancehall sample' },
+  { label: 'R&B', prompt: 'an rnb music sample' },
+  { label: 'Pop', prompt: 'a pop music sample' },
+  { label: 'Experimental', prompt: 'an experimental electronic sample' },
+];
+const ALL_TAG_PROMPTS = [...INSTRUMENTS, ...GENRES].map((c) => c.prompt);
+
+const INSTRUMENT_HINTS = [
+  { label: 'Kick', re: /\bkicks?\b|\bbd\b|bassdrum|bass drum/i },
+  { label: 'Snare', re: /\bsnares?\b|\bsd\b/i },
+  { label: 'Clap', re: /\bclaps?\b/i },
+  { label: 'Hi-hat', re: /\bhi[\s-]*hats?\b|\bhats?\b|\bhh\b/i },
+  { label: 'Cymbal', re: /\bcymbals?\b|\bcrash\b|\bride\b/i },
+  { label: 'Tom', re: /\btoms?\b/i },
+  { label: 'Perc', re: /\bperc(ussion)?\b|\bshaker\b|\bconga\b|\bbongo\b/i },
+  { label: 'Bass', re: /\bbass(es)?\b|\bsub\b/i },
+  { label: 'Synth', re: /\bsynths?\b/i },
+  { label: 'Pad', re: /\bpads?\b/i },
+  { label: 'Lead', re: /\bleads?\b/i },
+  { label: 'Vocal', re: /\bvocals?\b|\bvox\b|\bvoice\b/i },
+  { label: 'FX', re: /\bfx\b|\briser\b|\bimpact\b|\bsweep\b/i },
+  { label: 'Guitar', re: /\bguitars?\b|\bgtr\b/i },
+  { label: 'Keys', re: /\bkeys?\b|\bpiano\b|\brhodes\b/i },
+  { label: 'Strings', re: /\bstrings?\b|\bviolin\b/i },
+  { label: 'Brass', re: /\bbrass\b|\bhorn\b|\btrumpet\b/i },
+];
+const GENRE_HINTS = [
+  { label: 'Hip-hop', re: /hip\s*hop|hiphop|boom\s*bap|old\s*school/i },
+  { label: 'Trap', re: /\btrap\b/i },
+  { label: 'House', re: /\bhouse\b/i },
+  { label: 'Techno', re: /\btechno\b/i },
+  { label: 'Drum & Bass', re: /drum\s*(and|&)\s*bass|\bdnb\b|\bd\&b\b/i },
+  { label: 'Jungle', re: /\bjungle\b/i },
+  { label: 'Funk', re: /\bfunk\b/i },
+  { label: 'Soul', re: /\bsoul\b/i },
+  { label: 'Jazz', re: /\bjazz\b/i },
+  { label: 'Rock', re: /\brock\b/i },
+  { label: 'Metal', re: /\bmetal\b/i },
+  { label: 'Ambient', re: /\bambient\b/i },
+  { label: 'Cinematic', re: /\bcinematic\b|\btrailer\b/i },
+  { label: 'Latin', re: /\blatin\b|\bsalsa\b|\bsamba\b/i },
+  { label: 'Reggae', re: /\breggae\b|\bdancehall\b/i },
+  { label: 'R&B', re: /\brn[b']\b|\br\s*&\s*b\b/i },
+];
 
 let win = null;
 
@@ -229,7 +287,7 @@ async function ensureTextEmbeds() {
   if (textEmbeds) return textEmbeds;
   if (textEmbedInflight) return textEmbedInflight;
   textEmbedInflight = new Promise((resolve) => {
-    enqueueEmbedJob({ type: 'embed-text', texts: CATEGORY_PROMPTS }, [], (msg) => {
+    enqueueEmbedJob({ type: 'embed-text', texts: ALL_TAG_PROMPTS }, [], (msg) => {
       if (msg.type === 'text-embedded' && msg.embeds) {
         textEmbeds = msg.embeds;
         textEmbedDim = msg.dim;
@@ -244,22 +302,45 @@ async function ensureTextEmbeds() {
   return textEmbedInflight;
 }
 
-function classifyEmb(emb) {
-  if (!emb || !textEmbeds) return { category: null, conf: 0 };
-  const nLab = CATEGORIES.length;
+function pathHints(filePath) {
+  const blob = `${path.basename(path.dirname(filePath))} ${path.basename(filePath, path.extname(filePath))}`;
+  const spaced = blob.replace(/[._-]+/g, ' ');
+  let instrument = null, genre = null;
+  for (const h of INSTRUMENT_HINTS) if (h.re.test(spaced)) { instrument = h.label; break; }
+  for (const h of GENRE_HINTS) if (h.re.test(spaced)) { genre = h.label; break; }
+  return { instrument, genre };
+}
+
+function argmaxSlice(emb, start, n) {
   const dim = Math.min(emb.length, textEmbedDim || emb.length);
   let best = -1, bestS = -Infinity, second = -Infinity;
-  for (let i = 0; i < nLab; i++) {
+  for (let i = 0; i < n; i++) {
     let s = 0;
-    const off = i * textEmbedDim;
+    const off = (start + i) * textEmbedDim;
     for (let d = 0; d < dim; d++) s += emb[d] * textEmbeds[off + d];
     if (s > bestS) { second = bestS; bestS = s; best = i; }
     else if (s > second) second = s;
   }
-  if (best < 0 || bestS < 0.12 || bestS - second < 0.015) {
-    return { category: 'Uncategorized', conf: bestS === -Infinity ? 0 : bestS };
+  return { idx: best, conf: bestS === -Infinity ? 0 : bestS, gap: bestS - second };
+}
+
+function classifyTags(e) {
+  const hints = pathHints(e.p);
+  let instrument = hints.instrument;
+  let genre = hints.genre;
+  if (e.emb && textEmbeds && textEmbedDim) {
+    const inst = argmaxSlice(e.emb, 0, INSTRUMENTS.length);
+    if (inst.idx >= 0 && inst.conf >= 0.11 && inst.gap >= 0.01) instrument = INSTRUMENTS[inst.idx].label;
+    else if (!instrument && inst.idx >= 0 && inst.conf >= 0.08) instrument = INSTRUMENTS[inst.idx].label;
+    const gen = argmaxSlice(e.emb, INSTRUMENTS.length, GENRES.length);
+    if (gen.idx >= 0 && gen.conf >= 0.10 && gen.gap >= 0.008) genre = GENRES[gen.idx].label;
+    else if (!genre && gen.idx >= 0 && gen.conf >= 0.08) genre = GENRES[gen.idx].label;
   }
-  return { category: CATEGORIES[best].label, conf: bestS };
+  if (hints.genre) genre = hints.genre;
+  return {
+    instrument: instrument || (e.emb && textEmbeds ? 'Uncategorized' : '—'),
+    genre: genre || '—',
+  };
 }
 
 let scanning = false;
@@ -286,6 +367,9 @@ async function rescan() {
 
     const needPeaks = [...library.values()].filter((e) => !e.peaks);
     if (needPeaks.length) await fillPeaks(needPeaks);
+
+    const needRhythm = [...library.values()].filter((e) => e.f && e.f.kind == null);
+    if (needRhythm.length) await fillRhythm(needRhythm);
 
     if (hasAnyEmb()) {
       progress('classify', 0, 0, 'Categorizing samples…', true);
@@ -339,6 +423,54 @@ function fillPeaks(entries) {
       });
       w.on('error', (e) => {
         console.error('peaks worker error:', e);
+        w.idle = true;
+        if (workers.every((x) => x.idle)) finish();
+      });
+      dispatch(w);
+    }
+    if (!nWorkers) finish();
+  });
+}
+
+function fillRhythm(entries) {
+  return new Promise((resolve) => {
+    const total = entries.length;
+    let next = 0, done = 0;
+    const nWorkers = Math.min(Math.max(1, os.cpus().length - 1), 4, total);
+    const workers = [];
+    const finish = () => {
+      for (const w of workers) w.terminate();
+      resolve();
+    };
+    const dispatch = (w) => {
+      if (next >= total) {
+        w.idle = true;
+        if (workers.every((x) => x.idle)) finish();
+        return;
+      }
+      const e = entries[next++];
+      w.postMessage({ type: 'rhythm', path: e.p });
+    };
+    progress('rhythm', 0, total, `Detecting loops 0/${total}`, true);
+    for (let i = 0; i < nWorkers; i++) {
+      const w = new Worker(new URL('./analysis/analysis-worker.js', import.meta.url));
+      w.idle = false;
+      workers.push(w);
+      w.on('message', (msg) => {
+        if (msg.type !== 'rhythm-result') return;
+        done++;
+        if (!msg.error) {
+          const e = library.get(msg.path);
+          if (e && e.f) {
+            e.f.kind = msg.kind || 'oneshot';
+            e.f.bpm = msg.bpm ?? null;
+          }
+        }
+        progress('rhythm', done, total, `Detecting loops ${done}/${total}`);
+        dispatch(w);
+      });
+      w.on('error', (e) => {
+        console.error('rhythm worker error:', e);
         w.idle = true;
         if (workers.every((x) => x.idle)) finish();
       });
@@ -465,7 +597,9 @@ function buildDataset() {
     folders: new Array(n),
     hasEmb: new Array(n),
     categories: new Array(n),
-    categoryConf: new Array(n),
+    genres: new Array(n),
+    kinds: new Array(n),
+    bpms: new Array(n),
     peaks,
     features: Object.fromEntries(SCALARS.map((k) => [k, new Array(n)])),
   };
@@ -475,9 +609,11 @@ function buildDataset() {
     ds.folders[i] = path.basename(path.dirname(e.p));
     ds.hasEmb[i] = !!e.emb;
     if (e.peaks && e.peaks.length === PEAK_BINS) peaks.set(e.peaks, i * PEAK_BINS);
-    const cls = classifyEmb(e.emb);
-    ds.categories[i] = !e.emb ? '—' : (!textEmbeds ? '…' : (cls.category || 'Uncategorized'));
-    ds.categoryConf[i] = cls.conf;
+    const tags = classifyTags(e);
+    ds.categories[i] = tags.instrument;
+    ds.genres[i] = tags.genre;
+    ds.kinds[i] = e.f && e.f.kind ? e.f.kind : null;
+    ds.bpms[i] = e.f && e.f.bpm != null ? e.f.bpm : null;
     for (const k of SCALARS) ds.features[k][i] = e.f[k] ?? null;
   }
   return ds;

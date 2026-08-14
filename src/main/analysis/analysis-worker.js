@@ -1,6 +1,6 @@
 // Worker thread: decodes one file at a time and extracts DSP features.
 import { parentPort } from 'node:worker_threads';
-import { analyzeFile, peaksFromFile } from './dsp.js';
+import { analyzeFile, peaksFromFile, rhythmFromFile } from './dsp.js';
 
 parentPort.on('message', async (msg) => {
   if (msg.type === 'peaks') {
@@ -9,6 +9,15 @@ parentPort.on('message', async (msg) => {
       parentPort.postMessage({ type: 'peaks-result', path: msg.path, peaks }, [peaks.buffer]);
     } catch (err) {
       parentPort.postMessage({ type: 'peaks-result', path: msg.path, error: String((err && err.message) || err) });
+    }
+    return;
+  }
+  if (msg.type === 'rhythm') {
+    try {
+      const r = await rhythmFromFile(msg.path);
+      parentPort.postMessage({ type: 'rhythm-result', path: msg.path, kind: r.kind, bpm: r.bpm });
+    } catch (err) {
+      parentPort.postMessage({ type: 'rhythm-result', path: msg.path, error: String((err && err.message) || err) });
     }
     return;
   }

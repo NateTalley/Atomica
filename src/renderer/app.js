@@ -24,17 +24,20 @@ const WEIGHT_KEYS = [
   ['noisiness', 'Noisiness'],
 ];
 
-let dataset = null;          // {n, paths, names, folders, hasEmb, features, peaks, categories}
+let dataset = null;          // {n, paths, names, folders, hasEmb, features, peaks, categories, genres, kinds, bpms}
 let params = null;
 let starmap = null;
 let simPositions = null;     // last similarity layout from main
 let filterText = '';
+let filterKind = new Set();
+let filterInstr = new Set();
+let filterGenre = new Set();
 let playingIdx = -1;
 let listSort = { key: 'name', dir: 1 };
 let listFiltered = [];
 const PEAK_BINS = 128;
 const LIST_ROW_H = 36;
-const LIST_WAVE_W = 160;
+const LIST_WAVE_W = 124;
 const LIST_WAVE_H = 28;
 
 // ------------------------------------------------------------ init
@@ -70,6 +73,7 @@ async function init() {
     applyDataset(ds, true);
   } else {
     $('empty').hidden = false;
+    renderTagFilters();
   }
 }
 
@@ -79,6 +83,8 @@ function applyDataset(ds, computeIfNeeded) {
     dataset.peaks = new Uint8Array(dataset.peaks);
   }
   rebuildFolderColors();
+  rebuildTagColors();
+  renderTagFilters();
   $('empty').hidden = ds.n > 0;
   starmap.setData(ds.n);
   restyle();
@@ -123,7 +129,7 @@ function buildControls() {
     }
   }
   const cb = $('colorBy');
-  cb.innerHTML = '<option value="folder">Folder</option>';
+  cb.innerHTML = '<option value="folder">Folder</option><option value="kind">One-shot / Loop</option><option value="instrument">Instrument</option><option value="genre">Genre</option>';
   for (const [key, label] of FEATURES) {
     const o = document.createElement('option');
     o.value = key;
@@ -157,6 +163,15 @@ function buildControls() {
     persistParams();
   });
   $('search').addEventListener('input', () => { filterText = $('search').value.toLowerCase(); restyle(); refreshList(true); });
+  $('clearFilters').addEventListener('click', () => {
+    filterKind.clear();
+    filterInstr.clear();
+    filterGenre.clear();
+    renderTagFilters();
+    restyle();
+    refreshList(true);
+  });
+  bindTagFilters();
 
   $('addFolder').addEventListener('click', async () => renderFolders(await api.pickFolder()));
   $('rescanBtn').addEventListener('click', () => api.rescan());
@@ -279,6 +294,19 @@ function axisValues(key) {
   return raw;
 }
 
+function hash01(i, seed) {
+  const x = Math.sin(i * 127.1 + seed) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+// Linear in the robust range; tails ease out instead of stacking on a wall.
+function softAxis(u) {
+  const a = Math.abs(u);
+  if (a <= 0.86) return u;
+  const t = (a - 0.86) / 0.55;
+  return Math.sign(u) * (0.86 + 0.28 * (1 - Math.exp(-2.4 * t)));
+}
+
 function axesPositions() {
   const xs = axisValues(params.axes.x);
   const ys = axisValues(params.axes.y);
@@ -286,12 +314,29 @@ function axesPositions() {
   const [y0, y1] = robustRange(ys);
   const n = dataset.n;
   const pos = new Float32Array(n * 2);
-  // deterministic small jitter so identical values don't stack into one dot
-  const jitter = (i) => (Math.sin(i * 127.1 + 311.7) % 1) * 0.012;
   for (let i = 0; i < n; i++) {
     const xv = xs[i], yv = ys[i];
-    pos[i * 2] = xv == null ? -1.06 : Math.max(-1, Math.min(1, ((xv - x0) / (x1 - x0)) * 1.84 - 0.92)) + jitter(i);
-    pos[i * 2 + 1] = yv == null ? -1.06 : Math.max(-1, Math.min(1, ((yv - y0) / (y1 - y0)) * 1.84 - 0.92)) + jitter(i + 7919);
+    let x = xv == null ? -1.08 : ((xv - x0) / (x1 - x0) - 0.5) * 1.72;
+    let y = yv == null ? -1.08 : ((yv - y0) / (y1 - y0) - 0.5) * 1.72;
+    x = softAxis(x);
+    y = softAxis(y);
+
+    const edgeX = Math.max(0, Math.abs(x) - 0.5) / 0.6;
+    const edgeY = Math.max(0, Math.abs(y) - 0.5) / 0.6;
+    const jAmt = (e) => 0.014 + 0.22 * e * e;
+    x += (hash01(i, 311.7) - 0.5) * jAmt(edgeX);
+    y += (hash01(i, 7919.3) - 0.5) * jAmt(edgeY);
+    // scatter along the wall so a row of maxed-out samples isn't a straight line
+    x += (hash01(i, 1543.2) - 0.5) * 0.16 * edgeY * edgeY;
+    y += (hash01(i, 9182.6) - 0.5) * 0.16 * edgeX * edgeX;
+
+    const ax = Math.abs(x), ay = Math.abs(y);
+    const m = Math.max(ax, ay, 1e-6);
+    const rim = Math.max(0, (m - 0.42) / 0.75);
+    const corner = (ax * ay) / (m * m);
+    const s = 1 - 0.2 * rim * rim * corner;
+    pos[i * 2] = x * s;
+    pos[i * 2 + 1] = y * s;
   }
   return pos;
 }
@@ -314,13 +359,23 @@ function hslToRgb(h, s, l) {
 // Hashing folder names to hues collides badly at small folder counts, so hues are
 // dealt out by golden angle over the sorted folder list — maximally far apart.
 let folderColors = new Map();
-function rebuildFolderColors() {
-  folderColors = new Map();
-  const names = [...new Set(dataset.folders)].sort();
-  names.forEach((name, i) => {
+let instrumentColors = new Map();
+let genreColors = new Map();
+function hueMap(names) {
+  const map = new Map();
+  const uniq = [...new Set(names.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  uniq.forEach((name, i) => {
     const hue = (i * 0.618033988749895) % 1;
-    folderColors.set(name, hslToRgb(hue, 0.62, i % 2 ? 0.7 : 0.58));
+    map.set(name, hslToRgb(hue, 0.62, i % 2 ? 0.7 : 0.58));
   });
+  return map;
+}
+function rebuildFolderColors() {
+  folderColors = dataset ? hueMap(dataset.folders) : new Map();
+}
+function rebuildTagColors() {
+  instrumentColors = dataset && dataset.categories ? hueMap(dataset.categories) : new Map();
+  genreColors = dataset && dataset.genres ? hueMap(dataset.genres) : new Map();
 }
 
 // brand gradient: low = deep orange, high = pale yellow
@@ -344,13 +399,19 @@ function restyle() {
   const sizes = new Float32Array(n);
   const alphas = new Float32Array(n);
 
+  const discrete = params.colorBy === 'folder' || params.colorBy === 'kind' || params.colorBy === 'instrument' || params.colorBy === 'genre';
   let colorRanks = null;
-  if (params.colorBy !== 'folder') colorRanks = percentileRanks(dataset.features[params.colorBy]);
+  if (!discrete) colorRanks = percentileRanks(dataset.features[params.colorBy]);
   let sizeRanks = null;
   if (params.sizeBy !== 'uniform') sizeRanks = percentileRanks(dataset.features[params.sizeBy]);
 
   for (let i = 0; i < n; i++) {
-    const c = params.colorBy === 'folder' ? folderColors.get(dataset.folders[i]) : stellarColor(colorRanks[i]);
+    let c;
+    if (params.colorBy === 'folder') c = folderColors.get(dataset.folders[i]);
+    else if (params.colorBy === 'kind') c = dataset.kinds && dataset.kinds[i] === 'loop' ? [1.0, 0.38, 0.12] : [1.0, 0.82, 0.22];
+    else if (params.colorBy === 'instrument') c = instrumentColors.get(dataset.categories[i]) || [1.0, 0.76, 0.18];
+    else if (params.colorBy === 'genre') c = genreColors.get(dataset.genres && dataset.genres[i]) || [1.0, 0.38, 0.12];
+    else c = stellarColor(colorRanks[i]);
     colors[i * 3] = c[0];
     colors[i * 3 + 1] = c[1];
     colors[i * 3 + 2] = c[2];
@@ -363,11 +424,105 @@ function restyle() {
 }
 
 function sampleVisible(i) {
-  if (!filterText || !dataset) return true;
-  if (dataset.names[i].toLowerCase().includes(filterText)) return true;
-  if (dataset.folders[i].toLowerCase().includes(filterText)) return true;
-  const cat = dataset.categories && dataset.categories[i];
-  return !!(cat && cat.toLowerCase().includes(filterText));
+  if (!dataset) return true;
+  if (filterKind.size) {
+    const k = dataset.kinds && dataset.kinds[i];
+    if (!filterKind.has(k)) return false;
+  }
+  if (filterInstr.size) {
+    const t = (dataset.categories && dataset.categories[i]) || '';
+    if (!filterInstr.has(t)) return false;
+  }
+  if (filterGenre.size) {
+    const g = (dataset.genres && dataset.genres[i]) || '';
+    if (!filterGenre.has(g)) return false;
+  }
+  if (!filterText) return true;
+  const kind = dataset.kinds && dataset.kinds[i];
+  const bpm = dataset.bpms && dataset.bpms[i];
+  const hay = [
+    dataset.names[i],
+    dataset.folders[i],
+    dataset.categories && dataset.categories[i] || '',
+    dataset.genres && dataset.genres[i] || '',
+    kind === 'loop' ? 'loop' : kind === 'oneshot' ? 'one-shot oneshot' : '',
+    bpm != null ? `${bpm} bpm` : '',
+  ].join(' ').toLowerCase();
+  return hay.includes(filterText);
+}
+
+function tagCounts(get) {
+  const m = new Map();
+  if (!dataset) return m;
+  for (let i = 0; i < dataset.n; i++) {
+    const k = get(i);
+    if (!k || k === '—' || k === '…') continue;
+    m.set(k, (m.get(k) || 0) + 1);
+  }
+  return m;
+}
+
+function fillChipRow(el, counts, selected, order, labels) {
+  el.replaceChildren();
+  const keys = (order || [...counts.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })))
+    .filter((k) => counts.has(k));
+  for (const key of [...selected]) if (!counts.has(key)) selected.delete(key);
+  for (const key of keys) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tag-chip' + (selected.has(key) ? ' on' : '');
+    btn.dataset.key = key;
+    btn.append(labels && labels[key] ? labels[key] : key);
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = String(counts.get(key));
+    btn.appendChild(n);
+    el.appendChild(btn);
+  }
+  const heading = el.previousElementSibling;
+  const empty = !keys.length;
+  el.hidden = empty;
+  if (heading && heading.tagName === 'H3') heading.hidden = empty;
+}
+
+function renderTagFilters() {
+  const kinds = tagCounts((i) => dataset.kinds && dataset.kinds[i]);
+  fillChipRow($('filterKind'), kinds, filterKind, ['oneshot', 'loop'], { oneshot: 'One-shot', loop: 'Loop' });
+  fillChipRow($('filterInstr'), tagCounts((i) => dataset.categories && dataset.categories[i]), filterInstr);
+  fillChipRow($('filterGenre'), tagCounts((i) => dataset.genres && dataset.genres[i]), filterGenre);
+  const active = filterKind.size + filterInstr.size + filterGenre.size;
+  $('clearFilters').hidden = !active;
+}
+
+function bindTagFilters() {
+  const rows = [
+    ['filterKind', filterKind],
+    ['filterInstr', filterInstr],
+    ['filterGenre', filterGenre],
+  ];
+  for (const [id, set] of rows) {
+    $(id).addEventListener('click', (e) => {
+      const btn = e.target.closest('.tag-chip');
+      if (!btn) return;
+      const key = btn.dataset.key;
+      if (set.has(key)) set.delete(key);
+      else set.add(key);
+      renderTagFilters();
+      restyle();
+      refreshList(true);
+    });
+  }
+}
+
+function toggleListTag(el) {
+  const val = el.dataset.val;
+  if (!val || val === '—' || val === '…') return;
+  const set = el.dataset.kind === 'genre' ? filterGenre : filterInstr;
+  if (set.has(val)) set.delete(val);
+  else set.add(val);
+  renderTagFilters();
+  restyle();
+  refreshList(true);
 }
 
 // ------------------------------------------------------------ list view
@@ -388,8 +543,14 @@ function refreshList(rebuildOrder) {
       if (key === 'duration') {
         const da = dataset.features.duration[a], db = dataset.features.duration[b];
         cmp = (da ?? -1) - (db ?? -1);
-      } else if (key === 'category') {
-        cmp = String(dataset.categories[a] || '').localeCompare(String(dataset.categories[b] || ''), undefined, { sensitivity: 'base' });
+      } else if (key === 'kind') {
+        cmp = String(dataset.kinds[a] || '').localeCompare(String(dataset.kinds[b] || ''));
+      } else if (key === 'bpm') {
+        cmp = (dataset.bpms[a] ?? -1) - (dataset.bpms[b] ?? -1);
+      } else if (key === 'tags' || key === 'category') {
+        const ta = `${dataset.categories[a] || ''} ${dataset.genres && dataset.genres[a] || ''}`;
+        const tb = `${dataset.categories[b] || ''} ${dataset.genres && dataset.genres[b] || ''}`;
+        cmp = ta.localeCompare(tb, undefined, { sensitivity: 'base' });
       } else {
         cmp = dataset.names[a].localeCompare(dataset.names[b], undefined, { numeric: true, sensitivity: 'base' });
       }
@@ -436,9 +597,13 @@ function makeListRow() {
   dur.className = 'list-dur';
   const name = document.createElement('div');
   name.className = 'list-name';
-  const cat = document.createElement('div');
-  cat.className = 'list-cat';
-  row.append(canvas, dur, name, cat);
+  const kind = document.createElement('div');
+  kind.className = 'list-kind';
+  const bpm = document.createElement('div');
+  bpm.className = 'list-bpm';
+  const tags = document.createElement('div');
+  tags.className = 'list-tags';
+  row.append(canvas, dur, name, kind, bpm, tags);
   return row;
 }
 
@@ -451,10 +616,41 @@ function paintListRow(row, idx) {
   const name = row.querySelector('.list-name');
   name.textContent = dataset.names[idx];
   name.title = dataset.paths[idx];
-  const cat = dataset.categories ? dataset.categories[idx] : '—';
-  const badge = row.querySelector('.list-cat');
-  badge.textContent = cat;
-  badge.classList.toggle('dim', cat === '—' || cat === 'Uncategorized' || cat === '…');
+  const kind = dataset.kinds ? dataset.kinds[idx] : null;
+  const kindEl = row.querySelector('.list-kind');
+  kindEl.textContent = kind === 'loop' ? 'Loop' : kind === 'oneshot' ? 'One-shot' : '—';
+  kindEl.classList.toggle('loop', kind === 'loop');
+  const bpm = dataset.bpms ? dataset.bpms[idx] : null;
+  row.querySelector('.list-bpm').textContent = kind === 'loop' && bpm != null ? String(bpm) : '—';
+  const tags = row.querySelector('.list-tags');
+  tags.replaceChildren();
+  const instr = dataset.categories ? dataset.categories[idx] : '';
+  const genre = dataset.genres ? dataset.genres[idx] : '';
+  let any = false;
+  if (instr && instr !== '—') {
+    tags.appendChild(listTagChip(instr, 'instr', instr === 'Uncategorized' || instr === '…'));
+    any = true;
+  }
+  if (genre && genre !== '—') {
+    tags.appendChild(listTagChip(genre, 'genre', genre === 'Uncategorized' || genre === '…'));
+    any = true;
+  }
+  if (!any) {
+    const s = document.createElement('span');
+    s.textContent = '—';
+    s.className = 'dim';
+    tags.appendChild(s);
+  }
+}
+
+function listTagChip(val, kind, dim) {
+  const s = document.createElement('span');
+  s.textContent = val;
+  s.dataset.val = val;
+  s.dataset.kind = kind;
+  if (kind === 'genre') s.classList.add('genre');
+  if (dim) s.classList.add('dim');
+  return s;
 }
 
 function formatDur(sec) {
@@ -497,6 +693,13 @@ function bindListPointer() {
 
   rowsEl.addEventListener('mousedown', (e) => {
     if (e.button === 2) return;
+    const chip = e.target.closest('.list-tags span');
+    if (chip && chip.dataset.val) {
+      toggleListTag(chip);
+      downIdx = -1;
+      downPos = null;
+      return;
+    }
     const row = e.target.closest('.list-row');
     if (!row) return;
     downIdx = parseInt(row.dataset.idx, 10);
@@ -540,6 +743,15 @@ function handleHover(idx, mx, my) {
   if (idx < 0 || !dataset) { tip.hidden = true; return; }
   const f = dataset.features;
   const parts = [`${f.duration[idx] != null ? f.duration[idx].toFixed(2) : '?'} s`];
+  const kind = dataset.kinds && dataset.kinds[idx];
+  if (kind === 'loop') {
+    const bpm = dataset.bpms && dataset.bpms[idx];
+    parts.push(bpm != null ? `Loop ${bpm} BPM` : 'Loop');
+  } else if (kind === 'oneshot') {
+    parts.push('One-shot');
+  }
+  if (dataset.categories && dataset.categories[idx] && dataset.categories[idx] !== '—') parts.push(dataset.categories[idx]);
+  if (dataset.genres && dataset.genres[idx] && dataset.genres[idx] !== '—') parts.push(dataset.genres[idx]);
   if (f.pitch[idx] != null) parts.push(noteName(f.pitch[idx]));
   if (f.brightness[idx] != null) parts.push(`${Math.round(Math.pow(2, f.brightness[idx]))} Hz`);
   if (f.loudness[idx] != null) parts.push(`${f.loudness[idx].toFixed(1)} dB`);
@@ -661,10 +873,16 @@ function updateStatus() {
 
 function showProgress({ phase, done, total, msg }) {
   const wrap = $('progressWrap');
+  const img = $('progressLogo');
   if (phase === 'idle') {
     wrap.hidden = true;
+    if (img) img.dataset.playing = '';
     updateStatus();
     return;
+  }
+  if (wrap.hidden && img) {
+    img.src = img.getAttribute('src');
+    img.dataset.playing = '1';
   }
   wrap.hidden = false;
   $('progressBar').style.width = total ? `${Math.round((done / total) * 100)}%` : '15%';
