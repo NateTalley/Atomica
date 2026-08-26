@@ -35,6 +35,11 @@ let filterGenre = new Set();
 let playingIdx = -1;
 let listSort = { key: 'name', dir: 1 };
 let listFiltered = [];
+let playlists = [];
+let activePlaylistId = null;   // when set, list/map shows only this playlist's samples
+let playlistPlayQueue = null;  // array of sample indices for sequential playlist playback
+let playlistPlayPos = -1;
+let playlistPathSets = new Map(); // pl.id -> Set of paths, rebuilt when dataset or playlists change
 const PEAK_BINS = 128;
 const LIST_ROW_H = 36;
 const LIST_WAVE_W = 124;
@@ -47,13 +52,15 @@ async function init() {
     onHover: handleHover,
     onClick: handleClick,
     onDragStart: (i) => api.startDrag(dataset.paths[i]),
-    onRightClick: (i) => api.reveal(dataset.paths[i]),
+    onRightClick: (i, x, y) => showContextMenu(i, x, y),
   });
 
   const st = await api.getState();
   params = st.params;
+  playlists = st.playlists || [];
   $('useEmb').checked = st.useEmbeddings;
   renderFolders(st.folders);
+  renderPlaylists();
   buildControls();
   syncControls();
   setView(params.view || 'map', true);
@@ -84,6 +91,7 @@ function applyDataset(ds, computeIfNeeded) {
   }
   rebuildFolderColors();
   rebuildTagColors();
+  rebuildPlaylistPathSets();
   renderTagFilters();
   $('empty').hidden = ds.n > 0;
   starmap.setData(ds.n);
@@ -192,6 +200,8 @@ function buildControls() {
   $('listScroll').addEventListener('scroll', () => renderListWindow());
   window.addEventListener('resize', () => { if (params && params.view === 'list') renderListWindow(); });
   bindListPointer();
+  bindPlaylistControls();
+  bindContextMenu();
 }
 
 function syncControls() {
@@ -425,6 +435,13 @@ function restyle() {
 
 function sampleVisible(i) {
   if (!dataset) return true;
+  if (activePlaylistId) {
+    const pl = playlists.find((p) => p.id === activePlaylistId);
+    if (pl) {
+      const pathSet = playlistPathSets.get(pl.id);
+      if (pathSet && !pathSet.has(dataset.paths[i])) return false;
+    }
+  }
   if (filterKind.size) {
     const k = dataset.kinds && dataset.kinds[i];
     if (!filterKind.has(k)) return false;
@@ -726,7 +743,8 @@ function bindListPointer() {
     e.preventDefault();
     const row = e.target.closest('.list-row');
     if (!row || !dataset) return;
-    api.reveal(dataset.paths[parseInt(row.dataset.idx, 10)]);
+    const idx = parseInt(row.dataset.idx, 10);
+    showContextMenu(idx, e.clientX, e.clientY);
   });
 }
 
@@ -795,6 +813,8 @@ function stopSource() {
 function stopAudio() {
   playGen++;
   playPending = false;
+  playlistPlayQueue = null;
+  playlistPlayPos = -1;
   stopSource();
   clearPlayingHighlight();
 }
@@ -839,6 +859,17 @@ async function handleClick(idx) {
       currentSource = null;
       masterGain = null;
       playPending = false;
+      // sequential playlist playback: advance to next track
+      if (playlistPlayQueue && playlistPlayPos >= 0) {
+        const nextPos = playlistPlayPos + 1;
+        if (nextPos < playlistPlayQueue.length) {
+          playlistPlayPos = nextPos;
+          const nextIdx = playlistPlayQueue[nextPos];
+          playingIdx = -1; // clear so handleClick doesn't think it's a toggle-stop
+          handleClick(nextIdx);
+          return;
+        }
+      }
       clearPlayingHighlight();
     };
     src.start();
@@ -896,6 +927,181 @@ function showNotice({ msg }) {
   el.hidden = false;
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => { el.hidden = true; }, 9000);
+}
+
+// ------------------------------------------------------------ playlists
+
+function rebuildPlaylistPathSets() {
+  playlistPathSets = new Map();
+  if (!dataset || !dataset.paths) return;
+  const pathIdx = new Map();
+  for (let i = 0; i < dataset.paths.length; i++) pathIdx.set(dataset.paths[i], i);
+  for (const pl of playlists) {
+    const s = new Set();
+    for (const p of pl.paths) if (pathIdx.has(p)) s.add(p);
+    playlistPathSets.set(pl.id, s);
+  }
+}
+
+function bindPlaylistControls() {
+  $('newPlaylist').addEventListener('click', async () => {
+    const name = prompt('Playlist name:', '');
+    if (name === null) return;
+    playlists = await api.playlistsCreate(name.trim() || 'Untitled');
+    renderPlaylists();
+  });
+}
+
+function renderPlaylists() {
+  const ul = $('playlistList');
+  ul.replaceChildren();
+  playlists.forEach((pl) => {
+    const li = document.createElement('li');
+    li.className = 'pl-item' + (pl.id === activePlaylistId ? ' active' : '');
+    const name = document.createElement('span');
+    name.className = 'pl-name';
+    name.textContent = pl.name;
+    name.title = `${pl.name} (${pl.paths.length} samples)`;
+    name.addEventListener('click', () => togglePlaylistFilter(pl.id));
+    const count = document.createElement('span');
+    count.className = 'pl-count';
+    count.textContent = String(pl.paths.length);
+    const x = document.createElement('span');
+    x.className = 'pl-x';
+    x.textContent = '\u2715';
+    x.title = 'Delete playlist';
+    x.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (activePlaylistId === pl.id) activePlaylistId = null;
+      playlists = await api.playlistsDelete(pl.id);
+      if (activePlaylistId && !playlists.find((p) => p.id === activePlaylistId)) activePlaylistId = null;
+      renderPlaylists();
+      restyle();
+      refreshList(true);
+    });
+    li.append(name, count, x);
+    ul.appendChild(li);
+  });
+}
+
+function togglePlaylistFilter(id) {
+  if (activePlaylistId === id) activePlaylistId = null;
+  else activePlaylistId = id;
+  renderPlaylists();
+  restyle();
+  refreshList(true);
+  if (params.view === 'map') starmap.fit();
+}
+
+// ---- context menu (right-click on map or list) ----
+
+let ctxMenuIdx = -1;
+
+function bindContextMenu() {
+  document.addEventListener('click', (e) => {
+    const m = $('ctxMenu');
+    if (m && !m.hidden && !m.contains(e.target)) m.hidden = true;
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') $('ctxMenu').hidden = true;
+  });
+}
+
+function showContextMenu(idx, x, y) {
+  if (!dataset || idx < 0) return;
+  const menu = $('ctxMenu');
+  ctxMenuIdx = idx;
+
+  const items = [];
+  // "Add to playlist >" submenu
+  items.push({ label: 'Add to playlist\u2026', submenu: playlists.length ? playlists.map((pl) => ({
+    label: `${pl.name} (${pl.paths.length})`,
+    action: async () => {
+      playlists = await api.playlistsAdd(pl.id, [dataset.paths[idx]]);
+      rebuildPlaylistPathSets();
+      renderPlaylists();
+      showNotice({ msg: `Added "${dataset.names[idx]}" to "${pl.name}"` });
+    },
+  })) : [{ label: 'No playlists yet', disabled: true }] });
+
+  // If in a playlist filter view, offer "Remove from this playlist"
+  if (activePlaylistId) {
+    const pl = playlists.find((p) => p.id === activePlaylistId);
+    if (pl) {
+      const path = dataset.paths[idx];
+      if (pl.paths.includes(path)) {
+        items.push({ label: `Remove from "${pl.name}"`, action: async () => {
+          playlists = await api.playlistsRemove(pl.id, path);
+          rebuildPlaylistPathSets();
+          renderPlaylists();
+          restyle();
+          refreshList(true);
+          showNotice({ msg: `Removed from "${pl.name}"` });
+        }});
+      }
+    }
+  }
+
+  // Play as playlist (if in a playlist view)
+  if (activePlaylistId) {
+    const pl = playlists.find((p) => p.id === activePlaylistId);
+    if (pl && pl.paths.length > 1) {
+      items.push({ label: `\u25B6 Play "${pl.name}" sequentially`, action: () => playPlaylist(pl) });
+    }
+  }
+
+  items.push({ label: 'Show in Explorer', action: () => api.reveal(dataset.paths[idx]) });
+
+  // build menu DOM
+  menu.replaceChildren();
+  for (const item of items) {
+    const el = document.createElement('div');
+    el.className = 'ctx-item' + (item.disabled ? ' disabled' : '');
+    el.textContent = item.label;
+    if (!item.disabled && item.action) {
+      el.addEventListener('click', () => { menu.hidden = true; item.action(); });
+    }
+    if (item.submenu) {
+      const sub = document.createElement('div');
+      sub.className = 'ctx-submenu';
+      for (const subItem of item.submenu) {
+        const subEl = document.createElement('div');
+        subEl.className = 'ctx-item' + (subItem.disabled ? ' disabled' : '');
+        subEl.textContent = subItem.label;
+        if (!subItem.disabled && subItem.action) {
+          subEl.addEventListener('click', () => { menu.hidden = true; subItem.action(); });
+        }
+        sub.appendChild(subEl);
+      }
+      el.classList.add('has-sub');
+      el.appendChild(sub);
+    }
+    menu.appendChild(el);
+  }
+
+  menu.hidden = false;
+  // position: clamp to viewport
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let mx = x, my = y;
+  if (mx + mw > vw - 4) mx = vw - mw - 4;
+  if (my + mh > vh - 4) my = vh - mh - 4;
+  menu.style.left = `${mx}px`;
+  menu.style.top = `${my}px`;
+}
+
+// ---- sequential playlist playback ----
+
+function playPlaylist(pl) {
+  if (!dataset || !pl.paths.length) return;
+  const pathToIdx = new Map();
+  for (let i = 0; i < dataset.paths.length; i++) pathToIdx.set(dataset.paths[i], i);
+  const queue = pl.paths.map((p) => pathToIdx.get(p)).filter((i) => i != null && i >= 0);
+  if (!queue.length) return;
+  stopAudio();
+  playlistPlayQueue = queue;
+  playlistPlayPos = 0;
+  handleClick(queue[0]);
 }
 
 init();

@@ -364,6 +364,87 @@ input[type="range"] {
   border-color: var(--panel-edge);
 }
 
+/* ---------- playlists ---------- */
+#playlistSection #newPlaylist { margin-bottom: 8px; }
+#playlistList { list-style: none; }
+#playlistList .pl-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--dim);
+  border-radius: 5px;
+  cursor: pointer;
+}
+#playlistList .pl-item:hover { background: rgba(255, 193, 7, 0.06); }
+#playlistList .pl-item.active {
+  background: rgba(255, 193, 7, 0.14);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+#playlistList .pl-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+#playlistList .pl-count {
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+#playlistList .pl-x {
+  cursor: pointer;
+  color: var(--dim);
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+#playlistList .pl-x:hover { color: #ff7b7b; }
+
+/* ---------- context menu ---------- */
+#ctxMenu {
+  position: fixed;
+  z-index: 100;
+  min-width: 180px;
+  background: rgba(18, 12, 8, 0.96);
+  border: 1px solid var(--panel-edge);
+  border-radius: 7px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.7);
+  padding: 4px 0;
+  font-size: 12px;
+}
+.ctx-item {
+  padding: 6px 14px;
+  cursor: pointer;
+  color: var(--text);
+  position: relative;
+  white-space: nowrap;
+}
+.ctx-item:hover { background: rgba(255, 193, 7, 0.12); }
+.ctx-item.disabled { color: var(--dim); cursor: default; }
+.ctx-item.disabled:hover { background: transparent; }
+.ctx-item.has-sub::after {
+  content: '\25B8';
+  float: right;
+  margin-left: 12px;
+  color: var(--dim);
+}
+.ctx-submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 0;
+  min-width: 160px;
+  background: rgba(18, 12, 8, 0.96);
+  border: 1px solid var(--panel-edge);
+  border-radius: 7px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.7);
+  padding: 4px 0;
+}
+.ctx-item.has-sub:hover .ctx-submenu { display: block; }
+
 /* ---------- status ---------- */
 #statusbar {
   grid-area: status;

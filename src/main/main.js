@@ -116,6 +116,7 @@ const state = {
   folders: [],
   useEmbeddings: true,
   params: defaultParams(),
+  playlists: [],  // [{ id, name, paths: [] }]
 };
 
 // path -> { p, mt, sz, f: {..features}, mfcc: [], emb: Float32Array|null, peaks: Uint8Array|null }
@@ -136,6 +137,7 @@ async function loadSettings() {
     if (Array.isArray(s.folders)) state.folders = s.folders;
     if (typeof s.useEmbeddings === 'boolean') state.useEmbeddings = s.useEmbeddings;
     if (s.params) state.params = { ...defaultParams(), ...s.params, weights: { ...defaultParams().weights, ...(s.params.weights || {}) } };
+    if (Array.isArray(s.playlists)) state.playlists = s.playlists;
   } catch { /* first run */ }
 }
 
@@ -143,6 +145,7 @@ async function saveSettings() {
   try {
     await fs.writeFile(settingsFile(), JSON.stringify({
       folders: state.folders, useEmbeddings: state.useEmbeddings, params: state.params,
+      playlists: state.playlists,
     }, null, 2));
   } catch (e) { console.error('saveSettings:', e); }
 }
@@ -769,6 +772,7 @@ function registerIpc() {
     useEmbeddings: state.useEmbeddings,
     params: state.params,
     sampleCount: library.size,
+    playlists: state.playlists,
   }));
 
   ipcMain.handle('pick-folder', async () => {
@@ -834,6 +838,54 @@ function registerIpc() {
 
   ipcMain.on('reveal', (_e, p) => {
     if (library.has(p)) shell.showItemInFolder(p);
+  });
+
+  // ---- playlists ----
+  ipcMain.handle('playlists:get', () => state.playlists);
+
+  ipcMain.handle('playlists:create', async (_e, name) => {
+    const pl = { id: `pl_${Date.now()}`, name: name || 'Untitled', paths: [] };
+    state.playlists.push(pl);
+    await saveSettings();
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:rename', async (_e, id, name) => {
+    const pl = state.playlists.find((p) => p.id === id);
+    if (pl) { pl.name = name || 'Untitled'; await saveSettings(); }
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:delete', async (_e, id) => {
+    state.playlists = state.playlists.filter((p) => p.id !== id);
+    await saveSettings();
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:add', async (_e, id, paths) => {
+    const pl = state.playlists.find((p) => p.id === id);
+    if (pl) {
+      const existing = new Set(pl.paths);
+      for (const p of paths) if (!existing.has(p)) pl.paths.push(p);
+      await saveSettings();
+    }
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:remove', async (_e, id, path) => {
+    const pl = state.playlists.find((p) => p.id === id);
+    if (pl) { pl.paths = pl.paths.filter((p) => p !== path); await saveSettings(); }
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:reorder', async (_e, id, from, to) => {
+    const pl = state.playlists.find((p) => p.id === id);
+    if (pl && from >= 0 && from < pl.paths.length && to >= 0 && to < pl.paths.length) {
+      const [item] = pl.paths.splice(from, 1);
+      pl.paths.splice(to, 0, item);
+      await saveSettings();
+    }
+    return state.playlists;
   });
 
   ipcMain.handle('request-dataset', () => {
