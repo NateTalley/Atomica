@@ -40,7 +40,7 @@ let activePlaylistId = null;   // when set, list/map shows only this playlist's 
 let playlistPlayQueue = null;  // array of sample indices for sequential playlist playback
 let playlistPlayPos = -1;
 let playlistPathSets = new Map(); // pl.id -> Set of paths, rebuilt when dataset or playlists change
-let listEdit = false;          // list-mode inline tag editing
+let editingIdx = -1;           // dataset index whose row has its tag editor open (-1 = none)
 let tagVocab = { instruments: [], genres: [], kinds: ['oneshot', 'loop'] };
 const PEAK_BINS = 128;
 const LIST_ROW_H = 36;
@@ -76,7 +76,12 @@ async function init() {
   api.onProgress(showProgress);
   api.onNotice(showNotice);
 
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopAudio(); });
+  // Escape closes an open row editor first; only stops playback when none is open.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (editingIdx >= 0) closeRowEditor();
+    else stopAudio();
+  });
 
   if (st.sampleCount) {
     const ds = await api.requestDataset();
@@ -192,12 +197,6 @@ function buildControls() {
 
   $('viewMap').addEventListener('click', () => setView('map'));
   $('viewList').addEventListener('click', () => setView('list'));
-  $('viewEdit').addEventListener('click', () => {
-    listEdit = !listEdit;
-    $('viewEdit').classList.toggle('active', listEdit);
-    $('listWrap').classList.toggle('editing', listEdit);
-    refreshList(false);
-  });
   $('listHead').addEventListener('click', (e) => {
     const key = e.target.dataset && e.target.dataset.sort;
     if (!key || key === 'waveform') return;
@@ -239,12 +238,7 @@ function setView(view, initial = false) {
   params.view = view === 'list' ? 'list' : 'map';
   $('viewMap').classList.toggle('active', params.view === 'map');
   $('viewList').classList.toggle('active', params.view === 'list');
-  $('viewEdit').hidden = params.view !== 'list';
-  if (params.view !== 'list' && listEdit) {
-    listEdit = false;
-    $('viewEdit').classList.remove('active');
-    $('listWrap').classList.remove('editing');
-  }
+  if (params.view !== 'list') closeRowEditor(false);
   $('map').hidden = params.view !== 'map';
   $('listWrap').hidden = params.view !== 'list';
   updateStatusHints();
@@ -674,12 +668,34 @@ function makeListRow() {
   bpm.className = 'list-bpm';
   const tags = document.createElement('div');
   tags.className = 'list-tags';
-  row.append(canvas, dur, name, kind, bpm, tags);
+  const edit = document.createElement('button');
+  edit.className = 'list-edit-btn';
+  edit.type = 'button';
+  edit.tabIndex = -1;
+  edit.textContent = '✎';
+  row.append(canvas, dur, name, kind, bpm, tags, edit);
   row.addEventListener('change', (e) => {
     const sel = e.target.closest('.list-edit-kind, .list-edit-instr, .list-edit-genre');
     if (sel) commitRowTags(row);
   });
   return row;
+}
+
+// The editor lives on one row at a time; rows are recycled by the virtual list,
+// so the open editor is tracked by dataset index rather than by element.
+function openRowEditor(idx) {
+  if (editingIdx === idx) return;
+  editingIdx = idx;
+  renderListWindow();
+  const row = $('listRows').querySelector('.list-row.editing');
+  const first = row && row.querySelector('select');
+  if (first) first.focus();
+}
+
+function closeRowEditor(repaint = true) {
+  if (editingIdx < 0) return;
+  editingIdx = -1;
+  if (repaint) renderListWindow();
 }
 
 function makeTagSelect(cls, values, current) {
@@ -732,7 +748,9 @@ function paintListRow(row, idx) {
   const instr = dataset.categories ? dataset.categories[idx] : '';
   const genre = dataset.genres ? dataset.genres[idx] : '';
 
-  if (listEdit) {
+  const editing = idx === editingIdx;
+  row.classList.toggle('editing', editing);
+  if (editing) {
     kindEl.classList.remove('loop');
     kindEl.replaceChildren(makeTagSelect('list-edit-kind', ['oneshot', 'loop'], kind === 'loop' ? 'loop' : 'oneshot'));
     // relabel the kind select options for readability
@@ -817,9 +835,25 @@ function bindListPointer() {
   let downIdx = -1;
   let dragStarted = false;
 
+  rowsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.list-edit-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    const row = btn.closest('.list-row');
+    if (!row) return;
+    const idx = parseInt(row.dataset.idx, 10);
+    if (idx === editingIdx) closeRowEditor();
+    else openRowEditor(idx);
+  });
+
   rowsEl.addEventListener('mousedown', (e) => {
     if (e.button === 2) return;
     if (e.target.closest('select')) return;
+    if (e.target.closest('.list-edit-btn')) return;
+    const editRow = e.target.closest('.list-row');
+    if (editingIdx >= 0 && (!editRow || parseInt(editRow.dataset.idx, 10) !== editingIdx)) {
+      closeRowEditor();
+    }
     const chip = e.target.closest('.list-tags span');
     if (chip && chip.dataset.val) {
       toggleListTag(chip);
@@ -855,6 +889,10 @@ function bindListPointer() {
     if (!row || !dataset) return;
     const idx = parseInt(row.dataset.idx, 10);
     showContextMenu(idx, e.clientX, e.clientY);
+  });
+
+  $('listScroll').addEventListener('mousedown', (e) => {
+    if (!e.target.closest('.list-row')) closeRowEditor();
   });
 }
 
@@ -1092,6 +1130,120 @@ function renderPlaylists() {
     li.append(name, count, x);
     ul.appendChild(li);
   });
+  renderPlaylistDetail();
+}
+
+// Detail view for the selected playlist: reorderable tracks, play-all, remove.
+function renderPlaylistDetail() {
+  const box = $('playlistDetail');
+  const pl = playlists.find((p) => p.id === activePlaylistId);
+  if (!pl) {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+  box.hidden = false;
+  box.replaceChildren();
+
+  const head = document.createElement('div');
+  head.className = 'pl-detail-head';
+  const title = document.createElement('span');
+  title.className = 'pl-detail-name';
+  title.textContent = pl.name;
+  title.title = 'Double-click to rename';
+  title.addEventListener('dblclick', async () => {
+    const next = prompt('Rename playlist:', pl.name);
+    if (next === null) return;
+    playlists = await api.playlistsRename(pl.id, next.trim() || pl.name);
+    renderPlaylists();
+  });
+  const play = document.createElement('button');
+  play.className = 'pl-play';
+  play.type = 'button';
+  play.textContent = '▶ Play all';
+  play.disabled = !pl.paths.length;
+  play.addEventListener('click', () => playPlaylist(pl));
+  head.append(title, play);
+  box.appendChild(head);
+
+  if (!pl.paths.length) {
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = 'Empty. Right-click any sample on the map or in the list → Add to playlist.';
+    box.appendChild(hint);
+    return;
+  }
+
+  const pathToIdx = new Map();
+  if (dataset && dataset.paths) {
+    for (let i = 0; i < dataset.paths.length; i++) pathToIdx.set(dataset.paths[i], i);
+  }
+
+  const ol = document.createElement('ol');
+  ol.className = 'pl-tracks';
+  let dragFrom = -1;
+
+  pl.paths.forEach((p, i) => {
+    const li = document.createElement('li');
+    li.className = 'pl-track';
+    li.draggable = true;
+    const idx = pathToIdx.has(p) ? pathToIdx.get(p) : -1;
+    if (idx < 0) li.classList.add('missing');
+    if (idx >= 0 && idx === playingIdx) li.classList.add('playing');
+
+    const num = document.createElement('span');
+    num.className = 'pl-track-n';
+    num.textContent = String(i + 1);
+    const nm = document.createElement('span');
+    nm.className = 'pl-track-name';
+    nm.textContent = idx >= 0 ? dataset.names[idx] : p.split(/[\\/]/).pop();
+    nm.title = p;
+    if (idx >= 0) nm.addEventListener('click', () => handleClick(idx));
+    const rm = document.createElement('span');
+    rm.className = 'pl-track-x';
+    rm.textContent = '✕';
+    rm.title = 'Remove from playlist';
+    rm.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      playlists = await api.playlistsRemove(pl.id, p);
+      rebuildPlaylistPathSets();
+      renderPlaylists();
+      restyle();
+      refreshList(true);
+    });
+
+    li.addEventListener('dragstart', (e) => {
+      dragFrom = i;
+      li.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(i));
+    });
+    li.addEventListener('dragend', () => {
+      dragFrom = -1;
+      li.classList.remove('dragging');
+      ol.querySelectorAll('.drop-target').forEach((n) => n.classList.remove('drop-target'));
+    });
+    li.addEventListener('dragover', (e) => {
+      if (dragFrom < 0) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      li.classList.add('drop-target');
+    });
+    li.addEventListener('dragleave', () => li.classList.remove('drop-target'));
+    li.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      li.classList.remove('drop-target');
+      const from = dragFrom;
+      dragFrom = -1;
+      if (from < 0 || from === i) return;
+      playlists = await api.playlistsReorder(pl.id, from, i);
+      renderPlaylists();
+    });
+
+    li.append(num, nm, rm);
+    ol.appendChild(li);
+  });
+  box.appendChild(ol);
 }
 
 function togglePlaylistFilter(id) {

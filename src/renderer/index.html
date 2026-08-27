@@ -7,10 +7,11 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="sidebar">
-    <div id="sidebarHead">
+  <div id="titlebar">
+    <img id="tbIcon" src="logo.png" alt="" draggable="false" />
+    <div id="menubar">
       <div id="fileMenuWrap">
-        <button id="fileMenuBtn" type="button" aria-haspopup="true" aria-expanded="false">File ▾</button>
+        <button id="fileMenuBtn" type="button" aria-haspopup="true" aria-expanded="false">File</button>
         <div id="fileMenu" hidden>
           <button type="button" id="addFolder" class="primary">Add folder…</button>
           <button type="button" id="rescanBtn" title="Rescan folders for new or changed samples">Rescan</button>
@@ -25,7 +26,10 @@
         </div>
       </div>
     </div>
+    <span id="tbTitle">Atomica</span>
+  </div>
 
+  <div id="sidebar">
     <div id="brand">
       <img id="brandLogo" src="header-logo.png" alt="ATOMICA — what music's made of" draggable="false" />
     </div>
@@ -119,7 +123,6 @@
     <div id="viewBar">
       <button id="viewMap" class="tab active">Map</button>
       <button id="viewList" class="tab">List</button>
-      <button id="viewEdit" class="tab" type="button" hidden>Edit</button>
     </div>
     <canvas id="map"></canvas>
     <div id="listWrap" hidden>
@@ -130,6 +133,7 @@
         <span data-sort="kind">Type</span>
         <span data-sort="bpm">BPM</span>
         <span data-sort="tags">Tags</span>
+        <span class="no-sort"></span>
       </div>
       <div id="listScroll">
         <div id="listSpacer"></div>

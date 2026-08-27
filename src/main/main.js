@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, dialog, nativeImage, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,6 +12,7 @@ const AUDIO_EXT = new Set(['.wav', '.wave', '.mp3', '.flac', '.ogg', '.oga']);
 const SCALARS = ['brightness', 'pitch', 'loudness', 'duration', 'attack', 'noisiness', 'flux', 'rolloff'];
 const PEAK_BINS = 128;
 const CACHE_VERSION = 2;
+const TITLEBAR_H = 32; // must match #titlebar height in style.css
 const INSTRUMENTS = [
   { label: 'Kick', prompt: 'the sound of a kick drum' },
   { label: 'Snare', prompt: 'the sound of a snare drum' },
@@ -942,6 +943,9 @@ function registerIpc() {
 // ------------------------------------------------------------ app
 
 async function createWindow() {
+  // Frameless title bar so the File menu lives in the window chrome (VS Code style).
+  // Windows/Linux keep native min/max/close via the overlay; macOS gets traffic lights.
+  const mac = process.platform === 'darwin';
   win = new BrowserWindow({
     width: 1500,
     height: 950,
@@ -950,13 +954,17 @@ async function createWindow() {
     backgroundColor: '#000000',
     title: 'Atomica',
     icon: path.join(__dirname, '..', 'renderer', 'logo.png'),
+    titleBarStyle: 'hidden',
+    ...(mac
+      ? { trafficLightPosition: { x: 12, y: (TITLEBAR_H - 14) / 2 } }
+      : { titleBarOverlay: { color: '#0d0a07', symbolColor: '#e6b45e', height: TITLEBAR_H } }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,
     },
   });
-  win.setMenuBarVisibility(false);
+  Menu.setApplicationMenu(null);
   if (SMOKE) {
     win.webContents.on('console-message', (_e, level, message) => {
       console.log(`[renderer:${level}] ${message}`);
