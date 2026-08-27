@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, dialog, nativeImage, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,6 +12,7 @@ const AUDIO_EXT = new Set(['.wav', '.wave', '.mp3', '.flac', '.ogg', '.oga']);
 const SCALARS = ['brightness', 'pitch', 'loudness', 'duration', 'attack', 'noisiness', 'flux', 'rolloff'];
 const PEAK_BINS = 128;
 const CACHE_VERSION = 2;
+const TITLEBAR_H = 32; // must match #titlebar height in style.css
 const INSTRUMENTS = [
   { label: 'Kick', prompt: 'the sound of a kick drum' },
   { label: 'Snare', prompt: 'the sound of a snare drum' },
@@ -116,6 +117,7 @@ const state = {
   folders: [],
   useEmbeddings: true,
   params: defaultParams(),
+  playlists: [],  // [{ id, name, paths: [] }]
 };
 
 // path -> { p, mt, sz, f: {..features}, mfcc: [], emb: Float32Array|null, peaks: Uint8Array|null }
@@ -136,6 +138,7 @@ async function loadSettings() {
     if (Array.isArray(s.folders)) state.folders = s.folders;
     if (typeof s.useEmbeddings === 'boolean') state.useEmbeddings = s.useEmbeddings;
     if (s.params) state.params = { ...defaultParams(), ...s.params, weights: { ...defaultParams().weights, ...(s.params.weights || {}) } };
+    if (Array.isArray(s.playlists)) state.playlists = s.playlists;
   } catch { /* first run */ }
 }
 
@@ -143,6 +146,7 @@ async function saveSettings() {
   try {
     await fs.writeFile(settingsFile(), JSON.stringify({
       folders: state.folders, useEmbeddings: state.useEmbeddings, params: state.params,
+      playlists: state.playlists,
     }, null, 2));
   } catch (e) { console.error('saveSettings:', e); }
 }
@@ -163,7 +167,7 @@ async function loadCache() {
         peaks = new Uint8Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
         if (peaks.length !== PEAK_BINS) peaks = null;
       }
-      library.set(e.p, { p: e.p, mt: e.mt, sz: e.sz, f: e.f, mfcc: e.mfcc, emb, peaks });
+      library.set(e.p, { p: e.p, mt: e.mt, sz: e.sz, f: e.f, mfcc: e.mfcc, emb, peaks, override: (e.override && typeof e.override === 'object') ? e.override : null });
     }
   } catch { /* no cache yet */ }
 }
@@ -181,6 +185,7 @@ async function saveCache() {
         p: e.p, mt: e.mt, sz: e.sz, f: e.f, mfcc: e.mfcc,
         emb: packB64(e.emb),
         peaks: packB64(e.peaks),
+        override: e.override || null,
       });
     }
     await fs.writeFile(cacheFile(), JSON.stringify({ version: CACHE_VERSION, entries }));
@@ -341,6 +346,16 @@ function classifyTags(e) {
     instrument: instrument || (e.emb && textEmbeds ? 'Uncategorized' : '—'),
     genre: genre || '—',
   };
+}
+
+// Manual corrections (from list Edit mode) overlay the model's guess. Overlaid at
+// dataset-build time so the auto value is still there if the user clears an override.
+function applyOverride(e, tags) {
+  const o = e.override;
+  if (!o) return tags;
+  if (o.instrument != null) tags.instrument = o.instrument;
+  if (o.genre != null) tags.genre = o.genre;
+  return tags;
 }
 
 let scanning = false;
@@ -562,6 +577,7 @@ function analyzeFiles(files) {
             f: msg.features, mfcc: msg.mfcc,
             emb: prev && prev.emb ? prev.emb : null,
             peaks: msg.peaks || (prev && prev.peaks) || null,
+            override: (prev && prev.override) || null,
           });
           if (msg.audio48 && wantEmb && !embedFatal) {
             embTotal++;
@@ -609,11 +625,12 @@ function buildDataset() {
     ds.folders[i] = path.basename(path.dirname(e.p));
     ds.hasEmb[i] = !!e.emb;
     if (e.peaks && e.peaks.length === PEAK_BINS) peaks.set(e.peaks, i * PEAK_BINS);
-    const tags = classifyTags(e);
+    const tags = applyOverride(e, classifyTags(e));
     ds.categories[i] = tags.instrument;
     ds.genres[i] = tags.genre;
-    ds.kinds[i] = e.f && e.f.kind ? e.f.kind : null;
-    ds.bpms[i] = e.f && e.f.bpm != null ? e.f.bpm : null;
+    const kind = (e.override && e.override.kind) || (e.f && e.f.kind) || null;
+    ds.kinds[i] = kind;
+    ds.bpms[i] = kind === 'loop' ? (e.f && e.f.bpm != null ? e.f.bpm : null) : null;
     for (const k of SCALARS) ds.features[k][i] = e.f[k] ?? null;
   }
   return ds;
@@ -769,6 +786,7 @@ function registerIpc() {
     useEmbeddings: state.useEmbeddings,
     params: state.params,
     sampleCount: library.size,
+    playlists: state.playlists,
   }));
 
   ipcMain.handle('pick-folder', async () => {
@@ -836,6 +854,54 @@ function registerIpc() {
     if (library.has(p)) shell.showItemInFolder(p);
   });
 
+  // ---- playlists ----
+  ipcMain.handle('playlists:get', () => state.playlists);
+
+  ipcMain.handle('playlists:create', async (_e, name) => {
+    const pl = { id: `pl_${Date.now()}`, name: name || 'Untitled', paths: [] };
+    state.playlists.push(pl);
+    await saveSettings();
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:rename', async (_e, id, name) => {
+    const pl = state.playlists.find((p) => p.id === id);
+    if (pl) { pl.name = name || 'Untitled'; await saveSettings(); }
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:delete', async (_e, id) => {
+    state.playlists = state.playlists.filter((p) => p.id !== id);
+    await saveSettings();
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:add', async (_e, id, paths) => {
+    const pl = state.playlists.find((p) => p.id === id);
+    if (pl) {
+      const existing = new Set(pl.paths);
+      for (const p of paths) if (!existing.has(p)) pl.paths.push(p);
+      await saveSettings();
+    }
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:remove', async (_e, id, path) => {
+    const pl = state.playlists.find((p) => p.id === id);
+    if (pl) { pl.paths = pl.paths.filter((p) => p !== path); await saveSettings(); }
+    return state.playlists;
+  });
+
+  ipcMain.handle('playlists:reorder', async (_e, id, from, to) => {
+    const pl = state.playlists.find((p) => p.id === id);
+    if (pl && from >= 0 && from < pl.paths.length && to >= 0 && to < pl.paths.length) {
+      const [item] = pl.paths.splice(from, 1);
+      pl.paths.splice(to, 0, item);
+      await saveSettings();
+    }
+    return state.playlists;
+  });
+
   ipcMain.handle('request-dataset', () => {
     const ds = buildDataset();
     if (hasAnyEmb() && !textEmbeds) {
@@ -843,11 +909,43 @@ function registerIpc() {
     }
     return ds;
   });
+
+  // ---- manual tag corrections ----
+  ipcMain.handle('tags:vocab', () => ({
+    instruments: INSTRUMENTS.map((x) => x.label),
+    genres: GENRES.map((x) => x.label),
+    kinds: ['oneshot', 'loop'],
+  }));
+
+  ipcMain.handle('sample:setTags', async (_e, samplePath, patch) => {
+    const entry = library.get(samplePath);
+    if (!entry) throw new Error('unknown sample');
+    const next = { ...(entry.override || {}) };
+    if (patch.kind !== undefined) {
+      if (patch.kind === null || patch.kind === '') delete next.kind;
+      else next.kind = patch.kind === 'loop' ? 'loop' : 'oneshot';
+    }
+    if (patch.instrument !== undefined) {
+      if (!patch.instrument || patch.instrument === '—') delete next.instrument;
+      else next.instrument = String(patch.instrument);
+    }
+    if (patch.genre !== undefined) {
+      if (!patch.genre || patch.genre === '—') delete next.genre;
+      else next.genre = String(patch.genre);
+    }
+    entry.override = Object.keys(next).length ? next : null;
+    await saveCache();
+    sendDataset();
+    return true;
+  });
 }
 
 // ------------------------------------------------------------ app
 
 async function createWindow() {
+  // Frameless title bar so the File menu lives in the window chrome (VS Code style).
+  // Windows/Linux keep native min/max/close via the overlay; macOS gets traffic lights.
+  const mac = process.platform === 'darwin';
   win = new BrowserWindow({
     width: 1500,
     height: 950,
@@ -856,13 +954,17 @@ async function createWindow() {
     backgroundColor: '#000000',
     title: 'Atomica',
     icon: path.join(__dirname, '..', 'renderer', 'logo.png'),
+    titleBarStyle: 'hidden',
+    ...(mac
+      ? { trafficLightPosition: { x: 12, y: (TITLEBAR_H - 14) / 2 } }
+      : { titleBarOverlay: { color: '#0d0a07', symbolColor: '#e6b45e', height: TITLEBAR_H } }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       sandbox: true,
     },
   });
-  win.setMenuBarVisibility(false);
+  Menu.setApplicationMenu(null);
   if (SMOKE) {
     win.webContents.on('console-message', (_e, level, message) => {
       console.log(`[renderer:${level}] ${message}`);

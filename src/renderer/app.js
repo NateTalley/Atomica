@@ -35,6 +35,13 @@ let filterGenre = new Set();
 let playingIdx = -1;
 let listSort = { key: 'name', dir: 1 };
 let listFiltered = [];
+let playlists = [];
+let activePlaylistId = null;   // when set, list/map shows only this playlist's samples
+let playlistPlayQueue = null;  // array of sample indices for sequential playlist playback
+let playlistPlayPos = -1;
+let playlistPathSets = new Map(); // pl.id -> Set of paths, rebuilt when dataset or playlists change
+let editingIdx = -1;           // dataset index whose row has its tag editor open (-1 = none)
+let tagVocab = { instruments: [], genres: [], kinds: ['oneshot', 'loop'] };
 const PEAK_BINS = 128;
 const LIST_ROW_H = 36;
 const LIST_WAVE_W = 124;
@@ -47,13 +54,16 @@ async function init() {
     onHover: handleHover,
     onClick: handleClick,
     onDragStart: (i) => api.startDrag(dataset.paths[i]),
-    onRightClick: (i) => api.reveal(dataset.paths[i]),
+    onRightClick: (i, x, y) => showContextMenu(i, x, y),
   });
 
   const st = await api.getState();
   params = st.params;
+  playlists = st.playlists || [];
+  try { tagVocab = await api.tagsVocab(); } catch { /* keep defaults */ }
   $('useEmb').checked = st.useEmbeddings;
   renderFolders(st.folders);
+  renderPlaylists();
   buildControls();
   syncControls();
   setView(params.view || 'map', true);
@@ -66,7 +76,12 @@ async function init() {
   api.onProgress(showProgress);
   api.onNotice(showNotice);
 
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopAudio(); });
+  // Escape closes an open row editor first; only stops playback when none is open.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (editingIdx >= 0) closeRowEditor();
+    else stopAudio();
+  });
 
   if (st.sampleCount) {
     const ds = await api.requestDataset();
@@ -84,6 +99,7 @@ function applyDataset(ds, computeIfNeeded) {
   }
   rebuildFolderColors();
   rebuildTagColors();
+  rebuildPlaylistPathSets();
   renderTagFilters();
   $('empty').hidden = ds.n > 0;
   starmap.setData(ds.n);
@@ -176,6 +192,8 @@ function buildControls() {
   $('addFolder').addEventListener('click', async () => renderFolders(await api.pickFolder()));
   $('rescanBtn').addEventListener('click', () => api.rescan());
   $('useEmb').addEventListener('change', () => api.setEmbeddings($('useEmb').checked));
+  bindFileMenu();
+  bindSideTabs();
 
   $('viewMap').addEventListener('click', () => setView('map'));
   $('viewList').addEventListener('click', () => setView('list'));
@@ -192,6 +210,8 @@ function buildControls() {
   $('listScroll').addEventListener('scroll', () => renderListWindow());
   window.addEventListener('resize', () => { if (params && params.view === 'list') renderListWindow(); });
   bindListPointer();
+  bindPlaylistControls();
+  bindContextMenu();
 }
 
 function syncControls() {
@@ -218,6 +238,7 @@ function setView(view, initial = false) {
   params.view = view === 'list' ? 'list' : 'map';
   $('viewMap').classList.toggle('active', params.view === 'map');
   $('viewList').classList.toggle('active', params.view === 'list');
+  if (params.view !== 'list') closeRowEditor(false);
   $('map').hidden = params.view !== 'map';
   $('listWrap').hidden = params.view !== 'list';
   updateStatusHints();
@@ -257,6 +278,43 @@ let persistTimer = null;
 function persistParams() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => api.setParams(params), 400);
+}
+
+function bindFileMenu() {
+  const btn = $('fileMenuBtn');
+  const menu = $('fileMenu');
+  const wrap = $('fileMenuWrap');
+  const setOpen = (open) => {
+    menu.hidden = !open;
+    btn.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(menu.hidden);
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.hidden && !wrap.contains(e.target)) setOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) setOpen(false);
+  });
+}
+
+function bindSideTabs() {
+  const tabs = [
+    ['sideTabMap', 'panelMap'],
+    ['sideTabType', 'panelType'],
+    ['sideTabPl', 'panelPl'],
+  ];
+  for (const [tab] of tabs) {
+    $(tab).addEventListener('click', () => {
+      for (const [t, panel] of tabs) {
+        $(t).classList.toggle('active', t === tab);
+        $(panel).hidden = t !== tab;
+      }
+    });
+  }
 }
 
 function renderFolders(folders) {
@@ -425,6 +483,13 @@ function restyle() {
 
 function sampleVisible(i) {
   if (!dataset) return true;
+  if (activePlaylistId) {
+    const pl = playlists.find((p) => p.id === activePlaylistId);
+    if (pl) {
+      const pathSet = playlistPathSets.get(pl.id);
+      if (pathSet && !pathSet.has(dataset.paths[i])) return false;
+    }
+  }
   if (filterKind.size) {
     const k = dataset.kinds && dataset.kinds[i];
     if (!filterKind.has(k)) return false;
@@ -603,8 +668,67 @@ function makeListRow() {
   bpm.className = 'list-bpm';
   const tags = document.createElement('div');
   tags.className = 'list-tags';
-  row.append(canvas, dur, name, kind, bpm, tags);
+  const edit = document.createElement('button');
+  edit.className = 'list-edit-btn';
+  edit.type = 'button';
+  edit.tabIndex = -1;
+  edit.textContent = '✎';
+  row.append(canvas, dur, name, kind, bpm, tags, edit);
+  row.addEventListener('change', (e) => {
+    const sel = e.target.closest('.list-edit-kind, .list-edit-instr, .list-edit-genre');
+    if (sel) commitRowTags(row);
+  });
   return row;
+}
+
+// The editor lives on one row at a time; rows are recycled by the virtual list,
+// so the open editor is tracked by dataset index rather than by element.
+function openRowEditor(idx) {
+  if (editingIdx === idx) return;
+  editingIdx = idx;
+  renderListWindow();
+  const row = $('listRows').querySelector('.list-row.editing');
+  const first = row && row.querySelector('select');
+  if (first) first.focus();
+}
+
+function closeRowEditor(repaint = true) {
+  if (editingIdx < 0) return;
+  editingIdx = -1;
+  if (repaint) renderListWindow();
+}
+
+function makeTagSelect(cls, values, current) {
+  const sel = document.createElement('select');
+  sel.className = cls;
+  const opts = values.includes(current) || current == null ? values : [current, ...values];
+  for (const v of opts) {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = v;
+    if (v === current) o.selected = true;
+    sel.appendChild(o);
+  }
+  return sel;
+}
+
+async function commitRowTags(row) {
+  const idx = parseInt(row.dataset.idx, 10);
+  if (!Number.isFinite(idx) || !dataset) return;
+  const kind = row.querySelector('.list-edit-kind').value;
+  const instrument = row.querySelector('.list-edit-instr').value;
+  const genre = row.querySelector('.list-edit-genre').value;
+  dataset.kinds[idx] = kind;
+  dataset.categories[idx] = instrument === '—' ? '—' : instrument;
+  dataset.genres[idx] = genre === '—' ? '—' : genre;
+  if (kind !== 'loop') dataset.bpms[idx] = null;
+  try {
+    await api.setSampleTags(dataset.paths[idx], { kind, instrument, genre });
+  } catch (e) {
+    showNotice({ msg: `Couldn't save tags: ${e.message}` });
+  }
+  renderTagFilters();
+  restyle();
 }
 
 function paintListRow(row, idx) {
@@ -618,14 +742,34 @@ function paintListRow(row, idx) {
   name.title = dataset.paths[idx];
   const kind = dataset.kinds ? dataset.kinds[idx] : null;
   const kindEl = row.querySelector('.list-kind');
-  kindEl.textContent = kind === 'loop' ? 'Loop' : kind === 'oneshot' ? 'One-shot' : '—';
-  kindEl.classList.toggle('loop', kind === 'loop');
   const bpm = dataset.bpms ? dataset.bpms[idx] : null;
-  row.querySelector('.list-bpm').textContent = kind === 'loop' && bpm != null ? String(bpm) : '—';
+  const bpmEl = row.querySelector('.list-bpm');
   const tags = row.querySelector('.list-tags');
-  tags.replaceChildren();
   const instr = dataset.categories ? dataset.categories[idx] : '';
   const genre = dataset.genres ? dataset.genres[idx] : '';
+
+  const editing = idx === editingIdx;
+  row.classList.toggle('editing', editing);
+  if (editing) {
+    kindEl.classList.remove('loop');
+    kindEl.replaceChildren(makeTagSelect('list-edit-kind', ['oneshot', 'loop'], kind === 'loop' ? 'loop' : 'oneshot'));
+    // relabel the kind select options for readability
+    const ks = kindEl.querySelector('select');
+    for (const o of ks.options) o.textContent = o.value === 'loop' ? 'Loop' : 'One-shot';
+    bpmEl.textContent = kind === 'loop' && bpm != null ? String(bpm) : '—';
+    tags.classList.add('edit');
+    tags.replaceChildren(
+      makeTagSelect('list-edit-instr', ['—', ...tagVocab.instruments], instr && instr !== '…' ? instr : '—'),
+      makeTagSelect('list-edit-genre', ['—', ...tagVocab.genres], genre && genre !== '…' ? genre : '—'),
+    );
+    return;
+  }
+
+  kindEl.textContent = kind === 'loop' ? 'Loop' : kind === 'oneshot' ? 'One-shot' : '—';
+  kindEl.classList.toggle('loop', kind === 'loop');
+  bpmEl.textContent = kind === 'loop' && bpm != null ? String(bpm) : '—';
+  tags.classList.remove('edit');
+  tags.replaceChildren();
   let any = false;
   if (instr && instr !== '—') {
     tags.appendChild(listTagChip(instr, 'instr', instr === 'Uncategorized' || instr === '…'));
@@ -691,8 +835,25 @@ function bindListPointer() {
   let downIdx = -1;
   let dragStarted = false;
 
+  rowsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.list-edit-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    const row = btn.closest('.list-row');
+    if (!row) return;
+    const idx = parseInt(row.dataset.idx, 10);
+    if (idx === editingIdx) closeRowEditor();
+    else openRowEditor(idx);
+  });
+
   rowsEl.addEventListener('mousedown', (e) => {
     if (e.button === 2) return;
+    if (e.target.closest('select')) return;
+    if (e.target.closest('.list-edit-btn')) return;
+    const editRow = e.target.closest('.list-row');
+    if (editingIdx >= 0 && (!editRow || parseInt(editRow.dataset.idx, 10) !== editingIdx)) {
+      closeRowEditor();
+    }
     const chip = e.target.closest('.list-tags span');
     if (chip && chip.dataset.val) {
       toggleListTag(chip);
@@ -726,7 +887,12 @@ function bindListPointer() {
     e.preventDefault();
     const row = e.target.closest('.list-row');
     if (!row || !dataset) return;
-    api.reveal(dataset.paths[parseInt(row.dataset.idx, 10)]);
+    const idx = parseInt(row.dataset.idx, 10);
+    showContextMenu(idx, e.clientX, e.clientY);
+  });
+
+  $('listScroll').addEventListener('mousedown', (e) => {
+    if (!e.target.closest('.list-row')) closeRowEditor();
   });
 }
 
@@ -795,6 +961,8 @@ function stopSource() {
 function stopAudio() {
   playGen++;
   playPending = false;
+  playlistPlayQueue = null;
+  playlistPlayPos = -1;
   stopSource();
   clearPlayingHighlight();
 }
@@ -839,6 +1007,17 @@ async function handleClick(idx) {
       currentSource = null;
       masterGain = null;
       playPending = false;
+      // sequential playlist playback: advance to next track
+      if (playlistPlayQueue && playlistPlayPos >= 0) {
+        const nextPos = playlistPlayPos + 1;
+        if (nextPos < playlistPlayQueue.length) {
+          playlistPlayPos = nextPos;
+          const nextIdx = playlistPlayQueue[nextPos];
+          playingIdx = -1; // clear so handleClick doesn't think it's a toggle-stop
+          handleClick(nextIdx);
+          return;
+        }
+      }
       clearPlayingHighlight();
     };
     src.start();
@@ -896,6 +1075,295 @@ function showNotice({ msg }) {
   el.hidden = false;
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => { el.hidden = true; }, 9000);
+}
+
+// ------------------------------------------------------------ playlists
+
+function rebuildPlaylistPathSets() {
+  playlistPathSets = new Map();
+  if (!dataset || !dataset.paths) return;
+  const pathIdx = new Map();
+  for (let i = 0; i < dataset.paths.length; i++) pathIdx.set(dataset.paths[i], i);
+  for (const pl of playlists) {
+    const s = new Set();
+    for (const p of pl.paths) if (pathIdx.has(p)) s.add(p);
+    playlistPathSets.set(pl.id, s);
+  }
+}
+
+function bindPlaylistControls() {
+  $('newPlaylist').addEventListener('click', async () => {
+    const name = prompt('Playlist name:', '');
+    if (name === null) return;
+    playlists = await api.playlistsCreate(name.trim() || 'Untitled');
+    renderPlaylists();
+  });
+}
+
+function renderPlaylists() {
+  const ul = $('playlistList');
+  ul.replaceChildren();
+  playlists.forEach((pl) => {
+    const li = document.createElement('li');
+    li.className = 'pl-item' + (pl.id === activePlaylistId ? ' active' : '');
+    const name = document.createElement('span');
+    name.className = 'pl-name';
+    name.textContent = pl.name;
+    name.title = `${pl.name} (${pl.paths.length} samples)`;
+    name.addEventListener('click', () => togglePlaylistFilter(pl.id));
+    const count = document.createElement('span');
+    count.className = 'pl-count';
+    count.textContent = String(pl.paths.length);
+    const x = document.createElement('span');
+    x.className = 'pl-x';
+    x.textContent = '\u2715';
+    x.title = 'Delete playlist';
+    x.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (activePlaylistId === pl.id) activePlaylistId = null;
+      playlists = await api.playlistsDelete(pl.id);
+      if (activePlaylistId && !playlists.find((p) => p.id === activePlaylistId)) activePlaylistId = null;
+      renderPlaylists();
+      restyle();
+      refreshList(true);
+    });
+    li.append(name, count, x);
+    ul.appendChild(li);
+  });
+  renderPlaylistDetail();
+}
+
+// Detail view for the selected playlist: reorderable tracks, play-all, remove.
+function renderPlaylistDetail() {
+  const box = $('playlistDetail');
+  const pl = playlists.find((p) => p.id === activePlaylistId);
+  if (!pl) {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+  box.hidden = false;
+  box.replaceChildren();
+
+  const head = document.createElement('div');
+  head.className = 'pl-detail-head';
+  const title = document.createElement('span');
+  title.className = 'pl-detail-name';
+  title.textContent = pl.name;
+  title.title = 'Double-click to rename';
+  title.addEventListener('dblclick', async () => {
+    const next = prompt('Rename playlist:', pl.name);
+    if (next === null) return;
+    playlists = await api.playlistsRename(pl.id, next.trim() || pl.name);
+    renderPlaylists();
+  });
+  const play = document.createElement('button');
+  play.className = 'pl-play';
+  play.type = 'button';
+  play.textContent = '▶ Play all';
+  play.disabled = !pl.paths.length;
+  play.addEventListener('click', () => playPlaylist(pl));
+  head.append(title, play);
+  box.appendChild(head);
+
+  if (!pl.paths.length) {
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = 'Empty. Right-click any sample on the map or in the list → Add to playlist.';
+    box.appendChild(hint);
+    return;
+  }
+
+  const pathToIdx = new Map();
+  if (dataset && dataset.paths) {
+    for (let i = 0; i < dataset.paths.length; i++) pathToIdx.set(dataset.paths[i], i);
+  }
+
+  const ol = document.createElement('ol');
+  ol.className = 'pl-tracks';
+  let dragFrom = -1;
+
+  pl.paths.forEach((p, i) => {
+    const li = document.createElement('li');
+    li.className = 'pl-track';
+    li.draggable = true;
+    const idx = pathToIdx.has(p) ? pathToIdx.get(p) : -1;
+    if (idx < 0) li.classList.add('missing');
+    if (idx >= 0 && idx === playingIdx) li.classList.add('playing');
+
+    const num = document.createElement('span');
+    num.className = 'pl-track-n';
+    num.textContent = String(i + 1);
+    const nm = document.createElement('span');
+    nm.className = 'pl-track-name';
+    nm.textContent = idx >= 0 ? dataset.names[idx] : p.split(/[\\/]/).pop();
+    nm.title = p;
+    if (idx >= 0) nm.addEventListener('click', () => handleClick(idx));
+    const rm = document.createElement('span');
+    rm.className = 'pl-track-x';
+    rm.textContent = '✕';
+    rm.title = 'Remove from playlist';
+    rm.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      playlists = await api.playlistsRemove(pl.id, p);
+      rebuildPlaylistPathSets();
+      renderPlaylists();
+      restyle();
+      refreshList(true);
+    });
+
+    li.addEventListener('dragstart', (e) => {
+      dragFrom = i;
+      li.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(i));
+    });
+    li.addEventListener('dragend', () => {
+      dragFrom = -1;
+      li.classList.remove('dragging');
+      ol.querySelectorAll('.drop-target').forEach((n) => n.classList.remove('drop-target'));
+    });
+    li.addEventListener('dragover', (e) => {
+      if (dragFrom < 0) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      li.classList.add('drop-target');
+    });
+    li.addEventListener('dragleave', () => li.classList.remove('drop-target'));
+    li.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      li.classList.remove('drop-target');
+      const from = dragFrom;
+      dragFrom = -1;
+      if (from < 0 || from === i) return;
+      playlists = await api.playlistsReorder(pl.id, from, i);
+      renderPlaylists();
+    });
+
+    li.append(num, nm, rm);
+    ol.appendChild(li);
+  });
+  box.appendChild(ol);
+}
+
+function togglePlaylistFilter(id) {
+  if (activePlaylistId === id) activePlaylistId = null;
+  else activePlaylistId = id;
+  renderPlaylists();
+  restyle();
+  refreshList(true);
+  if (params.view === 'map') starmap.fit();
+}
+
+// ---- context menu (right-click on map or list) ----
+
+let ctxMenuIdx = -1;
+
+function bindContextMenu() {
+  document.addEventListener('click', (e) => {
+    const m = $('ctxMenu');
+    if (m && !m.hidden && !m.contains(e.target)) m.hidden = true;
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') $('ctxMenu').hidden = true;
+  });
+}
+
+function showContextMenu(idx, x, y) {
+  if (!dataset || idx < 0) return;
+  const menu = $('ctxMenu');
+  ctxMenuIdx = idx;
+
+  const items = [];
+  // "Add to playlist >" submenu
+  items.push({ label: 'Add to playlist\u2026', submenu: playlists.length ? playlists.map((pl) => ({
+    label: `${pl.name} (${pl.paths.length})`,
+    action: async () => {
+      playlists = await api.playlistsAdd(pl.id, [dataset.paths[idx]]);
+      rebuildPlaylistPathSets();
+      renderPlaylists();
+      showNotice({ msg: `Added "${dataset.names[idx]}" to "${pl.name}"` });
+    },
+  })) : [{ label: 'No playlists yet', disabled: true }] });
+
+  // If in a playlist filter view, offer "Remove from this playlist"
+  if (activePlaylistId) {
+    const pl = playlists.find((p) => p.id === activePlaylistId);
+    if (pl) {
+      const path = dataset.paths[idx];
+      if (pl.paths.includes(path)) {
+        items.push({ label: `Remove from "${pl.name}"`, action: async () => {
+          playlists = await api.playlistsRemove(pl.id, path);
+          rebuildPlaylistPathSets();
+          renderPlaylists();
+          restyle();
+          refreshList(true);
+          showNotice({ msg: `Removed from "${pl.name}"` });
+        }});
+      }
+    }
+  }
+
+  // Play as playlist (if in a playlist view)
+  if (activePlaylistId) {
+    const pl = playlists.find((p) => p.id === activePlaylistId);
+    if (pl && pl.paths.length > 1) {
+      items.push({ label: `\u25B6 Play "${pl.name}" sequentially`, action: () => playPlaylist(pl) });
+    }
+  }
+
+  items.push({ label: 'Show in Explorer', action: () => api.reveal(dataset.paths[idx]) });
+
+  // build menu DOM
+  menu.replaceChildren();
+  for (const item of items) {
+    const el = document.createElement('div');
+    el.className = 'ctx-item' + (item.disabled ? ' disabled' : '');
+    el.textContent = item.label;
+    if (!item.disabled && item.action) {
+      el.addEventListener('click', () => { menu.hidden = true; item.action(); });
+    }
+    if (item.submenu) {
+      const sub = document.createElement('div');
+      sub.className = 'ctx-submenu';
+      for (const subItem of item.submenu) {
+        const subEl = document.createElement('div');
+        subEl.className = 'ctx-item' + (subItem.disabled ? ' disabled' : '');
+        subEl.textContent = subItem.label;
+        if (!subItem.disabled && subItem.action) {
+          subEl.addEventListener('click', () => { menu.hidden = true; subItem.action(); });
+        }
+        sub.appendChild(subEl);
+      }
+      el.classList.add('has-sub');
+      el.appendChild(sub);
+    }
+    menu.appendChild(el);
+  }
+
+  menu.hidden = false;
+  // position: clamp to viewport
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let mx = x, my = y;
+  if (mx + mw > vw - 4) mx = vw - mw - 4;
+  if (my + mh > vh - 4) my = vh - mh - 4;
+  menu.style.left = `${mx}px`;
+  menu.style.top = `${my}px`;
+}
+
+// ---- sequential playlist playback ----
+
+function playPlaylist(pl) {
+  if (!dataset || !pl.paths.length) return;
+  const pathToIdx = new Map();
+  for (let i = 0; i < dataset.paths.length; i++) pathToIdx.set(dataset.paths[i], i);
+  const queue = pl.paths.map((p) => pathToIdx.get(p)).filter((i) => i != null && i >= 0);
+  if (!queue.length) return;
+  stopAudio();
+  playlistPlayQueue = queue;
+  playlistPlayPos = 0;
+  handleClick(queue[0]);
 }
 
 init();

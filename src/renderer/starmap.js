@@ -275,7 +275,7 @@ class Starmap {
     c.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const idx = this.pick(e.offsetX, e.offsetY);
-      if (idx >= 0 && this.handlers.onRightClick) this.handlers.onRightClick(idx);
+      if (idx >= 0 && this.handlers.onRightClick) this.handlers.onRightClick(idx, e.clientX, e.clientY);
     });
 
     c.addEventListener('wheel', (e) => {
