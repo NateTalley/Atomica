@@ -39,19 +39,68 @@ body {
   background: linear-gradient(180deg, var(--panel), #0a0806);
   border-right: 1px solid var(--panel-edge);
   padding: 16px 14px;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
 }
+#sidebarHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+#fileMenuWrap { position: relative; z-index: 30; }
+#fileMenuBtn {
+  padding: 5px 12px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+#fileMenuBtn.open { border-color: var(--accent); }
+#fileMenu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 260px;
+  max-width: 320px;
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(18, 12, 8, 0.98);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#fileMenu button { width: 100%; text-align: left; }
+#fileMenu .menu-sep { height: 1px; background: var(--panel-edge); margin: 4px 0; }
+#fileMenu #folderList { margin-top: 0; }
+#fileMenu .check { margin-top: 4px; }
+#fileMenu .hint { margin-top: 2px; }
+
 #brand {
   display: block;
+  flex-shrink: 0;
 }
 #brandLogo {
   width: 100%;
   height: auto;
   display: block;
   object-fit: contain;
+}
+
+#sideTabs { flex-shrink: 0; margin-bottom: 0; }
+.side-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
 section h2 {
@@ -197,7 +246,7 @@ input[type="range"] {
   z-index: 4;
   display: flex;
   gap: 4px;
-  width: 168px;
+  width: 246px;
 }
 #viewBar .tab { background: rgba(18, 14, 11, 0.88); }
 #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; z-index: 1; }
@@ -363,6 +412,34 @@ input[type="range"] {
   background: transparent;
   border-color: var(--panel-edge);
 }
+
+/* ---------- list edit mode ---------- */
+#listWrap.editing .list-row { cursor: default; }
+.list-edit-kind,
+.list-edit-instr,
+.list-edit-genre {
+  background: #16110c;
+  color: var(--text);
+  border: 1px solid var(--panel-edge);
+  border-radius: 5px;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 11px;
+  outline: none;
+  max-width: 100%;
+  cursor: pointer;
+}
+.list-edit-kind:focus,
+.list-edit-instr:focus,
+.list-edit-genre:focus { border-color: var(--accent); }
+.list-edit-kind { width: 100%; }
+.list-tags.edit {
+  display: flex;
+  gap: 4px;
+  overflow: visible;
+}
+.list-tags.edit .list-edit-instr,
+.list-tags.edit .list-edit-genre { flex: 1 1 0; min-width: 0; }
 
 /* ---------- playlists ---------- */
 #playlistSection #newPlaylist { margin-bottom: 8px; }

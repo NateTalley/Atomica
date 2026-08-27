@@ -16,9 +16,14 @@ npm install
 npm start
 ```
 
-First launch: click **+ Add folder**, pick your sample directories, and let it
-analyze. Analysis is cached, so subsequent launches are instant and a rescan only
-touches files that are new or changed.
+First launch: open the **File** menu (top-left) → **Add folder**, pick your sample
+directories, and let it analyze. Analysis is cached, so subsequent launches are
+instant and a rescan only touches files that are new or changed.
+
+The left column is organized into three tabs: **Mapping** (layout, display, and
+search), **Type** (filter by one-shot/loop, instrument, and genre), and
+**Playlists**. Folder management and the AI-similarity toggle live in the **File**
+menu.
 
 ## Using the map
 
@@ -75,6 +80,13 @@ Per sample, in worker threads:
 Turn the CLAP checkbox off for a purely deterministic map built only from
 features you can name — everything still works, just with less "sounds like"
 intelligence.
+
+## Correcting classifications
+
+The one-shot/loop, instrument, and genre tags are the model's best guess and it
+will miss some. Switch the map to **List** view, click **Edit**, and each row's
+Type and tag cells become dropdowns you can correct by hand. Corrections are
+saved per file and survive rescans — the model won't overwrite them.
 
 ## Performance
 

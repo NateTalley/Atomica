@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('atomica', {
   playlistsAdd: (id, paths) => ipcRenderer.invoke('playlists:add', id, paths),
   playlistsRemove: (id, path) => ipcRenderer.invoke('playlists:remove', id, path),
   playlistsReorder: (id, from, to) => ipcRenderer.invoke('playlists:reorder', id, from, to),
+  tagsVocab: () => ipcRenderer.invoke('tags:vocab'),
+  setSampleTags: (path, patch) => ipcRenderer.invoke('sample:setTags', path, patch),
   onProgress: (cb) => ipcRenderer.on('progress', (_e, d) => cb(d)),
   onDataset: (cb) => ipcRenderer.on('dataset', (_e, d) => cb(d)),
   onPositions: (cb) => ipcRenderer.on('positions', (_e, d) => cb(d)),

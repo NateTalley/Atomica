@@ -166,7 +166,7 @@ async function loadCache() {
         peaks = new Uint8Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
         if (peaks.length !== PEAK_BINS) peaks = null;
       }
-      library.set(e.p, { p: e.p, mt: e.mt, sz: e.sz, f: e.f, mfcc: e.mfcc, emb, peaks });
+      library.set(e.p, { p: e.p, mt: e.mt, sz: e.sz, f: e.f, mfcc: e.mfcc, emb, peaks, override: (e.override && typeof e.override === 'object') ? e.override : null });
     }
   } catch { /* no cache yet */ }
 }
@@ -184,6 +184,7 @@ async function saveCache() {
         p: e.p, mt: e.mt, sz: e.sz, f: e.f, mfcc: e.mfcc,
         emb: packB64(e.emb),
         peaks: packB64(e.peaks),
+        override: e.override || null,
       });
     }
     await fs.writeFile(cacheFile(), JSON.stringify({ version: CACHE_VERSION, entries }));
@@ -344,6 +345,16 @@ function classifyTags(e) {
     instrument: instrument || (e.emb && textEmbeds ? 'Uncategorized' : '—'),
     genre: genre || '—',
   };
+}
+
+// Manual corrections (from list Edit mode) overlay the model's guess. Overlaid at
+// dataset-build time so the auto value is still there if the user clears an override.
+function applyOverride(e, tags) {
+  const o = e.override;
+  if (!o) return tags;
+  if (o.instrument != null) tags.instrument = o.instrument;
+  if (o.genre != null) tags.genre = o.genre;
+  return tags;
 }
 
 let scanning = false;
@@ -565,6 +576,7 @@ function analyzeFiles(files) {
             f: msg.features, mfcc: msg.mfcc,
             emb: prev && prev.emb ? prev.emb : null,
             peaks: msg.peaks || (prev && prev.peaks) || null,
+            override: (prev && prev.override) || null,
           });
           if (msg.audio48 && wantEmb && !embedFatal) {
             embTotal++;
@@ -612,11 +624,12 @@ function buildDataset() {
     ds.folders[i] = path.basename(path.dirname(e.p));
     ds.hasEmb[i] = !!e.emb;
     if (e.peaks && e.peaks.length === PEAK_BINS) peaks.set(e.peaks, i * PEAK_BINS);
-    const tags = classifyTags(e);
+    const tags = applyOverride(e, classifyTags(e));
     ds.categories[i] = tags.instrument;
     ds.genres[i] = tags.genre;
-    ds.kinds[i] = e.f && e.f.kind ? e.f.kind : null;
-    ds.bpms[i] = e.f && e.f.bpm != null ? e.f.bpm : null;
+    const kind = (e.override && e.override.kind) || (e.f && e.f.kind) || null;
+    ds.kinds[i] = kind;
+    ds.bpms[i] = kind === 'loop' ? (e.f && e.f.bpm != null ? e.f.bpm : null) : null;
     for (const k of SCALARS) ds.features[k][i] = e.f[k] ?? null;
   }
   return ds;
@@ -894,6 +907,35 @@ function registerIpc() {
       ensureTextEmbeds().then(() => sendDataset());
     }
     return ds;
+  });
+
+  // ---- manual tag corrections ----
+  ipcMain.handle('tags:vocab', () => ({
+    instruments: INSTRUMENTS.map((x) => x.label),
+    genres: GENRES.map((x) => x.label),
+    kinds: ['oneshot', 'loop'],
+  }));
+
+  ipcMain.handle('sample:setTags', async (_e, samplePath, patch) => {
+    const entry = library.get(samplePath);
+    if (!entry) throw new Error('unknown sample');
+    const next = { ...(entry.override || {}) };
+    if (patch.kind !== undefined) {
+      if (patch.kind === null || patch.kind === '') delete next.kind;
+      else next.kind = patch.kind === 'loop' ? 'loop' : 'oneshot';
+    }
+    if (patch.instrument !== undefined) {
+      if (!patch.instrument || patch.instrument === '—') delete next.instrument;
+      else next.instrument = String(patch.instrument);
+    }
+    if (patch.genre !== undefined) {
+      if (!patch.genre || patch.genre === '—') delete next.genre;
+      else next.genre = String(patch.genre);
+    }
+    entry.override = Object.keys(next).length ? next : null;
+    await saveCache();
+    sendDataset();
+    return true;
   });
 }
 

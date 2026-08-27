@@ -8,87 +8,105 @@
 </head>
 <body>
   <div id="sidebar">
+    <div id="sidebarHead">
+      <div id="fileMenuWrap">
+        <button id="fileMenuBtn" type="button" aria-haspopup="true" aria-expanded="false">File ▾</button>
+        <div id="fileMenu" hidden>
+          <button type="button" id="addFolder" class="primary">Add folder…</button>
+          <button type="button" id="rescanBtn" title="Rescan folders for new or changed samples">Rescan</button>
+          <div class="menu-sep"></div>
+          <ul id="folderList"></ul>
+          <div class="menu-sep"></div>
+          <label class="check">
+            <input type="checkbox" id="useEmb" />
+            <span>AI similarity (CLAP)</span>
+          </label>
+          <div class="hint">Downloads a ~90 MB model on first analysis. Clusters by how samples <i>sound</i>, not just their stats.</div>
+        </div>
+      </div>
+    </div>
+
     <div id="brand">
       <img id="brandLogo" src="header-logo.png" alt="ATOMICA — what music's made of" draggable="false" />
     </div>
 
-    <section>
-      <div class="row">
-        <button id="addFolder" class="primary">+ Add folder</button>
-        <button id="rescanBtn" title="Rescan folders for new or changed samples">⟳ Rescan</button>
-      </div>
-      <ul id="folderList"></ul>
-      <label class="check">
-        <input type="checkbox" id="useEmb" />
-        <span>AI similarity (CLAP)</span>
-      </label>
-      <div class="hint">Downloads a ~90 MB model on first analysis. Clusters by how samples <i>sound</i>, not just their stats.</div>
-    </section>
+    <div id="sideTabs" class="tabs">
+      <button id="sideTabMap" class="tab active" type="button">Mapping</button>
+      <button id="sideTabType" class="tab" type="button">Type</button>
+      <button id="sideTabPl" class="tab" type="button">Playlists</button>
+    </div>
 
-    <section>
-      <h2>Mapping</h2>
-      <div class="tabs">
-        <button id="tabSim" class="tab active">Similarity</button>
-        <button id="tabAxes" class="tab">Axes</button>
-      </div>
+    <div id="panelMap" class="side-panel">
+      <section>
+        <div class="tabs">
+          <button id="tabSim" class="tab active">Similarity</button>
+          <button id="tabAxes" class="tab">Axes</button>
+        </div>
 
-      <div id="simPanel">
-        <label class="field">Method
-          <select id="method">
-            <option value="umap">UMAP (clusters)</option>
-            <option value="pca">PCA (fast, linear)</option>
+        <div id="simPanel">
+          <label class="field">Method
+            <select id="method">
+              <option value="umap">UMAP (clusters)</option>
+              <option value="pca">PCA (fast, linear)</option>
+            </select>
+          </label>
+          <label class="field slider">Neighbors <span id="nNeighborsVal"></span>
+            <input type="range" id="nNeighbors" min="3" max="60" step="1" />
+          </label>
+          <label class="field slider">Min distance <span id="minDistVal"></span>
+            <input type="range" id="minDist" min="0" max="0.95" step="0.01" />
+          </label>
+          <h3>Feature weights</h3>
+          <div id="weights"></div>
+          <button id="applyMap" class="primary wide">Recompute map</button>
+        </div>
+
+        <div id="axesPanel" hidden>
+          <label class="field">X axis <select id="axisX"></select></label>
+          <label class="field">Y axis <select id="axisY"></select></label>
+          <div class="hint">Axes update instantly — no recompute needed.</div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Display</h2>
+        <label class="field">Color by <select id="colorBy"></select></label>
+        <label class="field">Size by
+          <select id="sizeBy">
+            <option value="uniform">Uniform</option>
+            <option value="loudness">Loudness</option>
+            <option value="duration">Duration</option>
+            <option value="brightness">Brightness</option>
           </select>
         </label>
-        <label class="field slider">Neighbors <span id="nNeighborsVal"></span>
-          <input type="range" id="nNeighbors" min="3" max="60" step="1" />
+        <input type="text" id="search" placeholder="Search name, folder, tag…" />
+        <label class="field slider">Volume <span id="volumeVal"></span>
+          <input type="range" id="volume" min="0" max="100" step="1" />
         </label>
-        <label class="field slider">Min distance <span id="minDistVal"></span>
-          <input type="range" id="minDist" min="0" max="0.95" step="0.01" />
-        </label>
-        <h3>Feature weights</h3>
-        <div id="weights"></div>
-        <button id="applyMap" class="primary wide">Recompute map</button>
-      </div>
+      </section>
+    </div>
 
-      <div id="axesPanel" hidden>
-        <label class="field">X axis <select id="axisX"></select></label>
-        <label class="field">Y axis <select id="axisY"></select></label>
-        <div class="hint">Axes update instantly — no recompute needed.</div>
-      </div>
-    </section>
+    <div id="panelType" class="side-panel" hidden>
+      <section>
+        <div id="tagFilters">
+          <h3>One-shot / Loop</h3>
+          <div id="filterKind" class="tag-row" hidden></div>
+          <h3>Instrument</h3>
+          <div id="filterInstr" class="tag-row" hidden></div>
+          <h3>Genre</h3>
+          <div id="filterGenre" class="tag-row" hidden></div>
+          <button id="clearFilters" hidden>Clear tag filters</button>
+        </div>
+      </section>
+    </div>
 
-    <section>
-      <h2>Display</h2>
-      <label class="field">Color by <select id="colorBy"></select></label>
-      <label class="field">Size by
-        <select id="sizeBy">
-          <option value="uniform">Uniform</option>
-          <option value="loudness">Loudness</option>
-          <option value="duration">Duration</option>
-          <option value="brightness">Brightness</option>
-        </select>
-      </label>
-      <input type="text" id="search" placeholder="Search name, folder, tag…" />
-      <div id="tagFilters">
-        <h3 hidden>Type</h3>
-        <div id="filterKind" class="tag-row" hidden></div>
-        <h3 hidden>Instrument</h3>
-        <div id="filterInstr" class="tag-row" hidden></div>
-        <h3 hidden>Genre</h3>
-        <div id="filterGenre" class="tag-row" hidden></div>
-        <button id="clearFilters" hidden>Clear tag filters</button>
-      </div>
-      <label class="field slider">Volume <span id="volumeVal"></span>
-        <input type="range" id="volume" min="0" max="100" step="1" />
-      </label>
-    </section>
-
-    <section id="playlistSection">
-      <h2>Playlists</h2>
-      <button id="newPlaylist" class="primary wide">+ New playlist</button>
-      <ul id="playlistList"></ul>
-      <div id="playlistDetail" hidden></div>
-    </section>
+    <div id="panelPl" class="side-panel" hidden>
+      <section id="playlistSection">
+        <button id="newPlaylist" class="primary wide">+ New playlist</button>
+        <ul id="playlistList"></ul>
+        <div id="playlistDetail" hidden></div>
+      </section>
+    </div>
 
     <div id="progressWrap" hidden>
       <img id="progressLogo" src="logo-spin.gif" alt="" draggable="false" />
@@ -101,6 +119,7 @@
     <div id="viewBar">
       <button id="viewMap" class="tab active">Map</button>
       <button id="viewList" class="tab">List</button>
+      <button id="viewEdit" class="tab" type="button" hidden>Edit</button>
     </div>
     <canvas id="map"></canvas>
     <div id="listWrap" hidden>
@@ -120,7 +139,7 @@
     <div id="tooltip" hidden></div>
     <div id="empty" hidden>
       <div class="glyph">✦</div>
-      <div>Add a sample folder to chart your library</div>
+      <div>Open File → Add folder to chart your library</div>
     </div>
     <div id="notice" hidden></div>
     <div id="ctxMenu" hidden></div>

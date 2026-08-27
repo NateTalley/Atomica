@@ -40,6 +40,8 @@ let activePlaylistId = null;   // when set, list/map shows only this playlist's 
 let playlistPlayQueue = null;  // array of sample indices for sequential playlist playback
 let playlistPlayPos = -1;
 let playlistPathSets = new Map(); // pl.id -> Set of paths, rebuilt when dataset or playlists change
+let listEdit = false;          // list-mode inline tag editing
+let tagVocab = { instruments: [], genres: [], kinds: ['oneshot', 'loop'] };
 const PEAK_BINS = 128;
 const LIST_ROW_H = 36;
 const LIST_WAVE_W = 124;
@@ -58,6 +60,7 @@ async function init() {
   const st = await api.getState();
   params = st.params;
   playlists = st.playlists || [];
+  try { tagVocab = await api.tagsVocab(); } catch { /* keep defaults */ }
   $('useEmb').checked = st.useEmbeddings;
   renderFolders(st.folders);
   renderPlaylists();
@@ -184,9 +187,17 @@ function buildControls() {
   $('addFolder').addEventListener('click', async () => renderFolders(await api.pickFolder()));
   $('rescanBtn').addEventListener('click', () => api.rescan());
   $('useEmb').addEventListener('change', () => api.setEmbeddings($('useEmb').checked));
+  bindFileMenu();
+  bindSideTabs();
 
   $('viewMap').addEventListener('click', () => setView('map'));
   $('viewList').addEventListener('click', () => setView('list'));
+  $('viewEdit').addEventListener('click', () => {
+    listEdit = !listEdit;
+    $('viewEdit').classList.toggle('active', listEdit);
+    $('listWrap').classList.toggle('editing', listEdit);
+    refreshList(false);
+  });
   $('listHead').addEventListener('click', (e) => {
     const key = e.target.dataset && e.target.dataset.sort;
     if (!key || key === 'waveform') return;
@@ -228,6 +239,12 @@ function setView(view, initial = false) {
   params.view = view === 'list' ? 'list' : 'map';
   $('viewMap').classList.toggle('active', params.view === 'map');
   $('viewList').classList.toggle('active', params.view === 'list');
+  $('viewEdit').hidden = params.view !== 'list';
+  if (params.view !== 'list' && listEdit) {
+    listEdit = false;
+    $('viewEdit').classList.remove('active');
+    $('listWrap').classList.remove('editing');
+  }
   $('map').hidden = params.view !== 'map';
   $('listWrap').hidden = params.view !== 'list';
   updateStatusHints();
@@ -267,6 +284,43 @@ let persistTimer = null;
 function persistParams() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => api.setParams(params), 400);
+}
+
+function bindFileMenu() {
+  const btn = $('fileMenuBtn');
+  const menu = $('fileMenu');
+  const wrap = $('fileMenuWrap');
+  const setOpen = (open) => {
+    menu.hidden = !open;
+    btn.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(menu.hidden);
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.hidden && !wrap.contains(e.target)) setOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) setOpen(false);
+  });
+}
+
+function bindSideTabs() {
+  const tabs = [
+    ['sideTabMap', 'panelMap'],
+    ['sideTabType', 'panelType'],
+    ['sideTabPl', 'panelPl'],
+  ];
+  for (const [tab] of tabs) {
+    $(tab).addEventListener('click', () => {
+      for (const [t, panel] of tabs) {
+        $(t).classList.toggle('active', t === tab);
+        $(panel).hidden = t !== tab;
+      }
+    });
+  }
 }
 
 function renderFolders(folders) {
@@ -621,7 +675,44 @@ function makeListRow() {
   const tags = document.createElement('div');
   tags.className = 'list-tags';
   row.append(canvas, dur, name, kind, bpm, tags);
+  row.addEventListener('change', (e) => {
+    const sel = e.target.closest('.list-edit-kind, .list-edit-instr, .list-edit-genre');
+    if (sel) commitRowTags(row);
+  });
   return row;
+}
+
+function makeTagSelect(cls, values, current) {
+  const sel = document.createElement('select');
+  sel.className = cls;
+  const opts = values.includes(current) || current == null ? values : [current, ...values];
+  for (const v of opts) {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = v;
+    if (v === current) o.selected = true;
+    sel.appendChild(o);
+  }
+  return sel;
+}
+
+async function commitRowTags(row) {
+  const idx = parseInt(row.dataset.idx, 10);
+  if (!Number.isFinite(idx) || !dataset) return;
+  const kind = row.querySelector('.list-edit-kind').value;
+  const instrument = row.querySelector('.list-edit-instr').value;
+  const genre = row.querySelector('.list-edit-genre').value;
+  dataset.kinds[idx] = kind;
+  dataset.categories[idx] = instrument === '—' ? '—' : instrument;
+  dataset.genres[idx] = genre === '—' ? '—' : genre;
+  if (kind !== 'loop') dataset.bpms[idx] = null;
+  try {
+    await api.setSampleTags(dataset.paths[idx], { kind, instrument, genre });
+  } catch (e) {
+    showNotice({ msg: `Couldn't save tags: ${e.message}` });
+  }
+  renderTagFilters();
+  restyle();
 }
 
 function paintListRow(row, idx) {
@@ -635,14 +726,32 @@ function paintListRow(row, idx) {
   name.title = dataset.paths[idx];
   const kind = dataset.kinds ? dataset.kinds[idx] : null;
   const kindEl = row.querySelector('.list-kind');
-  kindEl.textContent = kind === 'loop' ? 'Loop' : kind === 'oneshot' ? 'One-shot' : '—';
-  kindEl.classList.toggle('loop', kind === 'loop');
   const bpm = dataset.bpms ? dataset.bpms[idx] : null;
-  row.querySelector('.list-bpm').textContent = kind === 'loop' && bpm != null ? String(bpm) : '—';
+  const bpmEl = row.querySelector('.list-bpm');
   const tags = row.querySelector('.list-tags');
-  tags.replaceChildren();
   const instr = dataset.categories ? dataset.categories[idx] : '';
   const genre = dataset.genres ? dataset.genres[idx] : '';
+
+  if (listEdit) {
+    kindEl.classList.remove('loop');
+    kindEl.replaceChildren(makeTagSelect('list-edit-kind', ['oneshot', 'loop'], kind === 'loop' ? 'loop' : 'oneshot'));
+    // relabel the kind select options for readability
+    const ks = kindEl.querySelector('select');
+    for (const o of ks.options) o.textContent = o.value === 'loop' ? 'Loop' : 'One-shot';
+    bpmEl.textContent = kind === 'loop' && bpm != null ? String(bpm) : '—';
+    tags.classList.add('edit');
+    tags.replaceChildren(
+      makeTagSelect('list-edit-instr', ['—', ...tagVocab.instruments], instr && instr !== '…' ? instr : '—'),
+      makeTagSelect('list-edit-genre', ['—', ...tagVocab.genres], genre && genre !== '…' ? genre : '—'),
+    );
+    return;
+  }
+
+  kindEl.textContent = kind === 'loop' ? 'Loop' : kind === 'oneshot' ? 'One-shot' : '—';
+  kindEl.classList.toggle('loop', kind === 'loop');
+  bpmEl.textContent = kind === 'loop' && bpm != null ? String(bpm) : '—';
+  tags.classList.remove('edit');
+  tags.replaceChildren();
   let any = false;
   if (instr && instr !== '—') {
     tags.appendChild(listTagChip(instr, 'instr', instr === 'Uncategorized' || instr === '…'));
@@ -710,6 +819,7 @@ function bindListPointer() {
 
   rowsEl.addEventListener('mousedown', (e) => {
     if (e.button === 2) return;
+    if (e.target.closest('select')) return;
     const chip = e.target.closest('.list-tags span');
     if (chip && chip.dataset.val) {
       toggleListTag(chip);
