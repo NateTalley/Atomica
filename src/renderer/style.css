@@ -488,7 +488,8 @@ input[type="range"] {
 .list-tags.edit .list-edit-genre { flex: 1 1 0; min-width: 0; }
 
 /* ---------- playlists ---------- */
-#playlistSection #newPlaylist { margin-bottom: 8px; }
+#playlistSection #newPlaylist { margin-bottom: 8px; margin-top: 0; }
+#playlistEmptyHint { margin: 0 0 8px; }
 #playlistList { list-style: none; }
 #playlistList .pl-item {
   display: flex;
@@ -525,6 +526,21 @@ input[type="range"] {
   flex-shrink: 0;
 }
 #playlistList .pl-x:hover { color: #ff7b7b; }
+
+/* drop a dragged sample onto a playlist to add it */
+.pl-item.drop-target,
+.pl-empty-hint.drop-target {
+  background: rgba(255, 193, 7, 0.22) !important;
+  box-shadow: inset 2px 0 0 var(--accent);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+.pl-empty-hint {
+  border: 1px dashed var(--panel-edge);
+  border-radius: 6px;
+  padding: 10px 8px;
+  text-align: center;
+}
 
 #playlistDetail { margin-top: 12px; border-top: 1px solid var(--panel-edge); padding-top: 10px; }
 .pl-detail-head {
@@ -618,6 +634,42 @@ input[type="range"] {
   padding: 4px 0;
 }
 .ctx-item.has-sub:hover .ctx-submenu { display: block; }
+
+/* ---------- name dialog (replaces window.prompt in Electron) ---------- */
+#nameDialog {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  -webkit-app-region: no-drag;
+}
+#nameDialogBox {
+  width: min(360px, calc(100% - 40px));
+  padding: 16px;
+  background: rgba(18, 12, 8, 0.98);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  box-shadow: 0 8px 36px rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#nameDialogTitle {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--dim);
+}
+#nameDialogInput { width: 100%; }
+#nameDialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+#nameDialogActions button { min-width: 84px; }
 
 /* ---------- status ---------- */
 #statusbar {

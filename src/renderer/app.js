@@ -42,6 +42,7 @@ let playlistPlayPos = -1;
 let playlistPathSets = new Map(); // pl.id -> Set of paths, rebuilt when dataset or playlists change
 let editingIdx = -1;           // dataset index whose row has its tag editor open (-1 = none)
 let tagVocab = { instruments: [], genres: [], kinds: ['oneshot', 'loop'] };
+let osDragPath = null;         // sample path of the current OS drag-out (drop into DAW or onto a playlist)
 const PEAK_BINS = 128;
 const LIST_ROW_H = 36;
 const LIST_WAVE_W = 124;
@@ -53,7 +54,10 @@ async function init() {
   starmap = new Starmap($('map'), {
     onHover: handleHover,
     onClick: handleClick,
-    onDragStart: (i) => api.startDrag(dataset.paths[i]),
+    onDragStart: (i) => {
+      osDragPath = dataset.paths[i];
+      api.startDrag(osDragPath);
+    },
     onRightClick: (i, x, y) => showContextMenu(i, x, y),
   });
 
@@ -79,6 +83,7 @@ async function init() {
   // Escape closes an open row editor first; only stops playback when none is open.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (!$('nameDialog').hidden) return;
     if (editingIdx >= 0) closeRowEditor();
     else stopAudio();
   });
@@ -872,7 +877,8 @@ function bindListPointer() {
     if (downIdx < 0 || !downPos || dragStarted) return;
     if (Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 6) {
       dragStarted = true;
-      api.startDrag(dataset.paths[downIdx]);
+      osDragPath = dataset.paths[downIdx];
+      api.startDrag(osDragPath);
     }
   });
 
@@ -882,6 +888,11 @@ function bindListPointer() {
     downIdx = -1;
     dragStarted = false;
   });
+
+  // A sample dragged out of the app can be dropped back onto a playlist entry
+  // (HTML5 drag events fire for OS drags re-entering the window). The dropped
+  // file's path comes from dataTransfer; osDragPath is the fallback.
+  document.addEventListener('mousedown', () => { osDragPath = null; });
 
   rowsEl.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -1091,9 +1102,51 @@ function rebuildPlaylistPathSets() {
   }
 }
 
+function askName({ title, initial = '', confirmLabel = 'Create' }) {
+  return new Promise((resolve) => {
+    const overlay = $('nameDialog');
+    const input = $('nameDialogInput');
+    const ok = $('nameDialogOk');
+    const cancel = $('nameDialogCancel');
+    $('nameDialogTitle').textContent = title;
+    ok.textContent = confirmLabel;
+    input.value = initial;
+    overlay.hidden = false;
+
+    const finish = (value) => {
+      overlay.hidden = true;
+      overlay.removeEventListener('click', onOverlay);
+      cancel.removeEventListener('click', onCancel);
+      ok.removeEventListener('click', onOk);
+      input.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onEsc, true);
+      resolve(value);
+    };
+    const onCancel = () => finish(null);
+    const onOk = () => finish(input.value);
+    const onOverlay = (e) => { if (e.target === overlay) onCancel(); };
+    const onKey = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); onOk(); }
+    };
+    const onEsc = (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onCancel();
+    };
+
+    overlay.addEventListener('click', onOverlay);
+    cancel.addEventListener('click', onCancel);
+    ok.addEventListener('click', onOk);
+    input.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onEsc, true);
+    requestAnimationFrame(() => { input.focus(); input.select(); });
+  });
+}
+
 function bindPlaylistControls() {
   $('newPlaylist').addEventListener('click', async () => {
-    const name = prompt('Playlist name:', '');
+    const name = await askName({ title: 'Playlist name', initial: '', confirmLabel: 'Create' });
     if (name === null) return;
     playlists = await api.playlistsCreate(name.trim() || 'Untitled');
     renderPlaylists();
@@ -1103,6 +1156,7 @@ function bindPlaylistControls() {
 function renderPlaylists() {
   const ul = $('playlistList');
   ul.replaceChildren();
+  $('playlistEmptyHint').hidden = playlists.length > 0;
   playlists.forEach((pl) => {
     const li = document.createElement('li');
     li.className = 'pl-item' + (pl.id === activePlaylistId ? ' active' : '');
@@ -1128,9 +1182,38 @@ function renderPlaylists() {
       refreshList(true);
     });
     li.append(name, count, x);
+    makePlaylistDropTarget(li, pl);
     ul.appendChild(li);
   });
   renderPlaylistDetail();
+}
+
+// Accept a sample dragged out of the map/list (OS drag) dropped onto a playlist.
+function makePlaylistDropTarget(el, pl) {
+  el.addEventListener('dragover', (e) => {
+    if (!osDragPath) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    el.classList.add('drop-target');
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('drop-target'));
+  el.addEventListener('drop', async (e) => {
+    el.classList.remove('drop-target');
+    if (!osDragPath) return;
+    e.preventDefault();
+    // prefer the path Electron reports on the dropped File; fall back to the
+    // path recorded when the drag started
+    let p = osDragPath;
+    try {
+      if (e.dataTransfer.files.length && e.dataTransfer.files[0].path) p = e.dataTransfer.files[0].path;
+    } catch { /* keep fallback */ }
+    osDragPath = null;
+    if (!dataset || !dataset.paths.includes(p)) return;
+    playlists = await api.playlistsAdd(pl.id, [p]);
+    rebuildPlaylistPathSets();
+    renderPlaylists();
+    showNotice({ msg: `Added "${p.split(/[\\/]/).pop()}" to "${pl.name}"` });
+  });
 }
 
 // Detail view for the selected playlist: reorderable tracks, play-all, remove.
@@ -1152,7 +1235,7 @@ function renderPlaylistDetail() {
   title.textContent = pl.name;
   title.title = 'Double-click to rename';
   title.addEventListener('dblclick', async () => {
-    const next = prompt('Rename playlist:', pl.name);
+    const next = await askName({ title: 'Rename playlist', initial: pl.name, confirmLabel: 'Rename' });
     if (next === null) return;
     playlists = await api.playlistsRename(pl.id, next.trim() || pl.name);
     renderPlaylists();
@@ -1168,8 +1251,9 @@ function renderPlaylistDetail() {
 
   if (!pl.paths.length) {
     const hint = document.createElement('div');
-    hint.className = 'hint';
-    hint.textContent = 'Empty. Right-click any sample on the map or in the list → Add to playlist.';
+    hint.className = 'hint pl-empty-hint';
+    hint.textContent = 'Empty. Drag samples here, or right-click any sample → Add to playlist.';
+    makePlaylistDropTarget(hint, pl);
     box.appendChild(hint);
     return;
   }
