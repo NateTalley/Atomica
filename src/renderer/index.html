@@ -107,6 +107,7 @@
     <div id="panelPl" class="side-panel" hidden>
       <section id="playlistSection">
         <button id="newPlaylist" class="primary wide">+ New playlist</button>
+        <div id="playlistEmptyHint" class="hint">No playlists yet. Create one, or add samples from the map.</div>
         <ul id="playlistList"></ul>
         <div id="playlistDetail" hidden></div>
       </section>
@@ -147,6 +148,17 @@
     </div>
     <div id="notice" hidden></div>
     <div id="ctxMenu" hidden></div>
+  </div>
+
+  <div id="nameDialog" hidden>
+    <div id="nameDialogBox">
+      <div id="nameDialogTitle"></div>
+      <input type="text" id="nameDialogInput" maxlength="80" />
+      <div id="nameDialogActions">
+        <button type="button" id="nameDialogCancel">Cancel</button>
+        <button type="button" id="nameDialogOk" class="primary">Create</button>
+      </div>
+    </div>
   </div>
 
   <div id="statusbar">

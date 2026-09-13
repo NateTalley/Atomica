@@ -142,6 +142,13 @@ async function loadSettings() {
   } catch { /* first run */ }
 }
 
+function ensureFavoritesPlaylist() {
+  const has = state.playlists.some((p) => String(p.name || '').toLowerCase() === 'favorites');
+  if (has) return false;
+  state.playlists.unshift({ id: 'pl_favorites', name: 'favorites', paths: [] });
+  return true;
+}
+
 async function saveSettings() {
   try {
     await fs.writeFile(settingsFile(), JSON.stringify({
@@ -975,6 +982,7 @@ async function createWindow() {
 
 app.whenReady().then(async () => {
   await loadSettings();
+  if (ensureFavoritesPlaylist()) await saveSettings();
   await loadCache();
   registerIpc();
   await createWindow();
@@ -984,6 +992,35 @@ app.whenReady().then(async () => {
   if (state.folders.length) rescan();
   if (SMOKE) {
     setTimeout(async () => {
+      try {
+        const pl = await win.webContents.executeJavaScript(`(async () => {
+          document.getElementById('sideTabPl').click();
+          const names = [...document.querySelectorAll('#playlistList .pl-name')].map((n) => n.textContent);
+          document.getElementById('newPlaylist').click();
+          const dialogOpen = !document.getElementById('nameDialog').hidden;
+          document.getElementById('nameDialogInput').value = '__smoke_tmp__';
+          document.getElementById('nameDialogOk').click();
+          await new Promise((r) => setTimeout(r, 400));
+          const afterCreate = [...document.querySelectorAll('#playlistList .pl-name')].map((n) => n.textContent);
+          const tmp = [...document.querySelectorAll('#playlistList .pl-item')]
+            .find((li) => li.querySelector('.pl-name')?.textContent === '__smoke_tmp__');
+          tmp?.querySelector('.pl-x')?.click();
+          await new Promise((r) => setTimeout(r, 400));
+          const afterDelete = [...document.querySelectorAll('#playlistList .pl-name')].map((n) => n.textContent);
+          return { names, dialogOpen, afterCreate, afterDelete };
+        })()`);
+        console.log('PLAYLISTS', JSON.stringify(pl));
+        if (!pl.names.some((n) => String(n).toLowerCase() === 'favorites')) {
+          throw new Error('favorites playlist missing');
+        }
+        if (!pl.dialogOpen) throw new Error('name dialog did not open');
+        if (!pl.afterCreate.includes('__smoke_tmp__')) throw new Error('create did not add playlist');
+        if (pl.afterDelete.includes('__smoke_tmp__')) throw new Error('delete did not remove playlist');
+      } catch (e) {
+        console.error('playlist check failed:', e);
+        app.exit(1);
+        return;
+      }
       try {
         const img = await win.webContents.capturePage();
         const shot = process.env.SMOKE_SHOT;
