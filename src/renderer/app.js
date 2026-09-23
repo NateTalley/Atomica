@@ -34,6 +34,7 @@ let filterInstr = new Set();
 let filterGenre = new Set();
 let playingIdx = -1;
 let listSort = { key: 'name', dir: 1 };
+let listShuffled = false;     // dice button: keep the current order random until re-sorted
 let listFiltered = [];
 let playlists = [];
 let activePlaylistId = null;   // when set, list/map shows only this playlist's samples
@@ -202,9 +203,15 @@ function buildControls() {
 
   $('viewMap').addEventListener('click', () => setView('map'));
   $('viewList').addEventListener('click', () => setView('list'));
+  $('viewShuffle').addEventListener('click', () => {
+    listShuffled = true;
+    for (const el of $('listHead').querySelectorAll('span')) el.classList.remove('sort-active');
+    refreshList(true);
+  });
   $('listHead').addEventListener('click', (e) => {
     const key = e.target.dataset && e.target.dataset.sort;
     if (!key || key === 'waveform') return;
+    listShuffled = false;
     if (listSort.key === key) listSort.dir *= -1;
     else { listSort.key = key; listSort.dir = 1; }
     for (const el of $('listHead').querySelectorAll('span')) {
@@ -243,6 +250,7 @@ function setView(view, initial = false) {
   params.view = view === 'list' ? 'list' : 'map';
   $('viewMap').classList.toggle('active', params.view === 'map');
   $('viewList').classList.toggle('active', params.view === 'list');
+  $('viewShuffle').hidden = params.view !== 'list';
   if (params.view !== 'list') closeRowEditor(false);
   $('map').hidden = params.view !== 'map';
   $('listWrap').hidden = params.view !== 'list';
@@ -606,7 +614,14 @@ function refreshList(rebuildOrder) {
   if (rebuildOrder) {
     const idxs = [];
     for (let i = 0; i < dataset.n; i++) if (sampleVisible(i)) idxs.push(i);
-    const dir = listSort.dir;
+    if (listShuffled) {
+      // Fisher–Yates
+      for (let i = idxs.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [idxs[i], idxs[j]] = [idxs[j], idxs[i]];
+      }
+    } else {
+      const dir = listSort.dir;
     const key = listSort.key;
     idxs.sort((a, b) => {
       let cmp = 0;
@@ -626,6 +641,7 @@ function refreshList(rebuildOrder) {
       }
       return cmp * dir || a - b;
     });
+    }
     listFiltered = idxs;
     $('listSpacer').style.height = `${listFiltered.length * LIST_ROW_H}px`;
   }
