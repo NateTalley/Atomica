@@ -449,9 +449,9 @@ function rebuildTagColors() {
   genreColors = dataset && dataset.genres ? hueMap(dataset.genres) : new Map();
 }
 
-// brand gradient: low = deep orange, high = pale yellow
+// brand gradient: low = deep red-orange, high = bright orange
 function stellarColor(t) {
-  const lo = [1.0, 0.35, 0.12], mid = [1.0, 0.76, 0.18], hi = [1.0, 0.95, 0.72];
+  const lo = [1.0, 0.20, 0.0], mid = [1.0, 0.45, 0.05], hi = [1.0, 0.70, 0.25];
   const mix = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
   return t < 0.5 ? mix(lo, mid, t * 2) : mix(mid, hi, (t - 0.5) * 2);
 }
@@ -834,7 +834,7 @@ function drawWaveform(canvas, idx) {
   ctx.fillRect(0, 0, w, h);
   const mid = h / 2;
   const peaks = dataset.peaks;
-  ctx.fillStyle = '#ffc107';
+  ctx.fillStyle = '#fc3b00';
   if (!peaks) {
     ctx.fillRect(0, mid - 1, w, 2);
     return;

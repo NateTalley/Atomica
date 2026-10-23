@@ -1,6 +1,6 @@
 {
-  "name": "atomica",
-  "productName": "Atomica",
+  "name": "sample-man",
+  "productName": "Sample Man",
   "version": "0.1.0",
   "description": "Star-map sample browser with fully editable mapping",
   "main": "src/main/main.js",

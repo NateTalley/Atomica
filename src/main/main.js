@@ -959,12 +959,12 @@ async function createWindow() {
     minWidth: 980,
     minHeight: 620,
     backgroundColor: '#000000',
-    title: 'Atomica',
+    title: 'Sample Man',
     icon: path.join(__dirname, '..', 'renderer', 'logo.png'),
     titleBarStyle: 'hidden',
     ...(mac
       ? { trafficLightPosition: { x: 12, y: (TITLEBAR_H - 14) / 2 } }
-      : { titleBarOverlay: { color: '#0d0a07', symbolColor: '#e6b45e', height: TITLEBAR_H } }),
+      : { titleBarOverlay: { color: '#0d0a07', symbolColor: '#fc3b00', height: TITLEBAR_H } }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
