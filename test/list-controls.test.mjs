@@ -48,6 +48,21 @@ test('batchPaths edits the selection only when the acted sample is in it', () =>
   assert.deepEqual(L.batchPaths(selected, ''), []);
 });
 
+test('editorTarget follows the playing sample, then the last checked row', () => {
+  assert.equal(L.editorTarget({ playingPath: 'b', anchorPath: 'a', anchorSelected: true }), 'b');
+  assert.equal(L.editorTarget({ playingPath: null, anchorPath: 'a', anchorSelected: true }), 'a');
+  assert.equal(L.editorTarget({ playingPath: '', anchorPath: 'a', anchorSelected: false }), null);
+  assert.equal(L.editorTarget({}), null);
+});
+
+test('withinMaxDuration hides samples longer than the cap', () => {
+  assert.equal(L.withinMaxDuration(59, true, 59), true);
+  assert.equal(L.withinMaxDuration(59.01, true, 59), false);
+  assert.equal(L.withinMaxDuration(120, false, 59), true);
+  assert.equal(L.withinMaxDuration(null, true, 59), true);
+  assert.equal(L.withinMaxDuration(10, true, 0), true);
+});
+
 test('rangeSelect unions the visible span and header state follows it', () => {
   const ordered = ['a', 'b', 'c', 'd'];
   const next = L.rangeSelect(new Set(['d']), ordered, 'a', 'c');

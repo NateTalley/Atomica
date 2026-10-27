@@ -4,8 +4,11 @@
 import { parentPort, workerData } from 'node:worker_threads';
 
 const MODEL_ID = 'Xenova/clap-htsat-unfused';
+const WHISPER_ID = 'Xenova/whisper-tiny';
+const WHISPER_SR = 16000;
 let audioPromise = null;
 let textPromise = null;
+let whisperPromise = null;
 
 async function ensureAudioModel() {
   if (!audioPromise) {
@@ -45,6 +48,51 @@ async function ensureTextModel() {
   return textPromise;
 }
 
+async function ensureWhisper() {
+  if (!whisperPromise) {
+    whisperPromise = (async () => {
+      try {
+        const { pipeline, env } = await import('@huggingface/transformers');
+        env.cacheDir = workerData.cacheDir;
+        env.allowLocalModels = false;
+        try {
+          return await pipeline('automatic-speech-recognition', WHISPER_ID, { dtype: 'q8' });
+        } catch {
+          return await pipeline('automatic-speech-recognition', WHISPER_ID);
+        }
+      } catch (err) {
+        whisperPromise = null;
+        throw err;
+      }
+    })();
+  }
+  return whisperPromise;
+}
+
+function transcriptText(result) {
+  if (!result) return '';
+  if (typeof result === 'string') return result;
+  if (typeof result.text === 'string') return result.text;
+  return '';
+}
+
+// Whisper's window is 30s. Longer files are split and the text is joined.
+async function transcribeAudio(asr, audio) {
+  const data = audio instanceof Float32Array ? audio : Float32Array.from(audio || []);
+  if (!data.length) return '';
+  const chunk = 30 * WHISPER_SR;
+  const parts = [];
+  for (let off = 0; off < data.length; off += chunk) {
+    const slice = data.subarray(off, Math.min(data.length, off + chunk));
+    if (slice.length < WHISPER_SR * 0.2 && parts.length) break;
+    const input = slice.length === data.length ? data : slice.slice();
+    const result = await asr(input, { return_timestamps: false });
+    const text = transcriptText(result).replace(/\s+/g, ' ').trim();
+    if (text) parts.push(text);
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 function l2NormalizeRows(data, n, dim) {
   for (let i = 0; i < n; i++) {
     const off = i * dim;
@@ -69,6 +117,21 @@ parentPort.on('message', async (msg) => {
       parentPort.postMessage({ type: 'text-embedded', embeds, dim, n }, [embeds.buffer]);
     } catch (err) {
       parentPort.postMessage({ type: 'text-error', error: String((err && err.message) || err) });
+    }
+    return;
+  }
+
+  if (msg.type === 'transcribe') {
+    try {
+      const asr = await ensureWhisper();
+      const text = await transcribeAudio(asr, msg.audio);
+      parentPort.postMessage({ type: 'transcribed', path: msg.path, text });
+    } catch (err) {
+      parentPort.postMessage({
+        type: 'transcribe-error',
+        path: msg.path,
+        error: String((err && err.message) || err),
+      });
     }
     return;
   }

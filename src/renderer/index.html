@@ -17,6 +17,11 @@
           <button type="button" id="rescanBtn" title="Rescan folders for new or changed samples">Rescan</button>
           <div class="menu-sep"></div>
           <ul id="folderList"></ul>
+          <div id="excludedWrap" hidden>
+            <div class="menu-sep"></div>
+            <div class="hint">Excluded from library</div>
+            <ul id="excludedList"></ul>
+          </div>
           <div class="menu-sep"></div>
           <label class="check">
             <input type="checkbox" id="useEmb" />
@@ -32,6 +37,18 @@
   <div id="sidebar">
     <div id="brand">
       <img id="brandLogo" src="header-logo.png" alt="ATOMICA — what music's made of" draggable="false" />
+    </div>
+
+    <div id="libraryFilters">
+      <input type="text" id="search" placeholder="Search name, folder, tag, lyrics…" />
+      <div class="max-dur">
+        <label class="check">
+          <input type="checkbox" id="maxDurOn" checked />
+          <span>Max length</span>
+        </label>
+        <input type="number" id="maxDur" min="1" max="3600" step="1" value="59" />
+        <span class="max-dur-unit">s</span>
+      </div>
     </div>
 
     <div id="sideTabs" class="tabs">
@@ -83,7 +100,6 @@
             <option value="brightness">Brightness</option>
           </select>
         </label>
-        <input type="text" id="search" placeholder="Search name, folder, tag…" />
         <label class="field slider">Volume <span id="volumeVal"></span>
           <input type="range" id="volume" min="0" max="100" step="1" />
         </label>
@@ -161,17 +177,24 @@
       <canvas id="seWave" draggable="false"></canvas>
       <div class="se-controls">
         <button id="sePlay" type="button">Play section</button>
+        <button id="sePause" type="button">Pause</button>
+        <button id="seStop" type="button">Stop</button>
         <label class="se-loop" title="Loop just the selected section">
           <input type="checkbox" id="seLoop" />
           <span>Loop section</span>
         </label>
         <label class="se-speed" title="Sample-wide playback speed. The audition uses one rate, so pitch changes with it. Saving the cut keeps the original speed.">
           Speed <span id="seRateVal">100%</span>
-          <input type="range" id="seRate" min="25" max="400" step="1" value="100" />
+          <input type="range" id="seRate" min="25" max="200" step="1" value="100" />
         </label>
         <button id="seReset" type="button" title="Play the whole sample at full speed">Reset</button>
         <button id="seSaveAs" type="button" class="primary" title="Write the section to a new file and keep the original">Save as new</button>
-        <button id="seSave" type="button" title="Overwrite this file with the selected section">Replace original…</button>
+        <div class="se-more">
+          <button id="seMore" type="button" title="More actions" aria-haspopup="true" aria-expanded="false">⋮</button>
+          <div id="seMoreMenu" hidden>
+            <button id="seSave" type="button" title="Overwrite this file with the selected section">Replace original…</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

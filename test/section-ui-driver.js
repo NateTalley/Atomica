@@ -86,7 +86,7 @@
   if (!document.getElementById('seLoop').checked) throw new Error('section loop defaulted off');
 
   dragSection(0.2, 0.8);
-  const picked = sectionByPath.get(gammaPath());
+  const picked = sectionDraft;
   if (!picked || Math.abs(picked.start - 0.2) > 0.03 || Math.abs(picked.end - 0.8) > 0.03) {
     throw new Error('selection ' + JSON.stringify(picked));
   }
@@ -107,7 +107,7 @@
   rate.value = '50';
   rate.dispatchEvent(new Event('input', { bubbles: true }));
   await waitFor(() => currentSource && Math.abs(currentSource.playbackRate.value - 0.5) < 0.001);
-  if (sectionByPath.get(gammaPath()).rate !== 0.5) throw new Error('rate was not stored on the sample');
+  if (!sectionDraft || sectionDraft.rate !== 0.5) throw new Error('rate was not stored on the draft');
   log.push('speed is the sample-wide playback rate');
 
   const originalBytes = (await window.atomica.readAudio(gammaPath())).byteLength;
@@ -130,7 +130,17 @@
   log.push('save as new writes the section and keeps the original file');
 
   document.getElementById('viewList').click();
-  await waitFor(() => rowFor(cutName), 8000, 'cut row');
+  await waitFor(() => {
+    const dlg = document.getElementById('nameDialog');
+    if (dlg && !dlg.hidden) return true;
+    return params.view === 'list';
+  }, 8000, 'leave-editor');
+  if (!document.getElementById('nameDialog').hidden) {
+    const title = document.getElementById('nameDialogTitle').textContent;
+    if (!title.includes('boundaries')) throw new Error('unexpected dialog ' + title);
+    document.getElementById('nameDialogCancel').click();
+  }
+  await waitFor(() => params.view === 'list' && rowFor(cutName), 8000, 'cut row');
   const cutRow = rowFor(cutName);
   const rowDump = [...document.querySelectorAll('#listRows .list-row')]
     .map((r) => `${r.dataset.idx}:${r.querySelector('.list-name').textContent}`).join(' | ');
@@ -145,9 +155,10 @@
     throw new Error(`row=${cutRow.querySelector('.list-name').textContent}#${cutRow.dataset.idx} title=${title} hidden=${ed.hidden} editor=${onEditor} w=${Math.round(width)} rows=${rowDump}`);
   }, 2500, 'open-cut');
   dragSection(0, 0.5);
-  const cutPath = dataset.paths[dataset.names.indexOf(cutName)];
-  const half = sectionByPath.get(cutPath);
+  const half = sectionDraft;
   if (!half || half.end > 0.55) throw new Error('second selection ' + JSON.stringify(half));
+  document.getElementById('seMore').click();
+  if (document.getElementById('seMoreMenu').hidden) throw new Error('replace menu stayed closed');
   const replaceBtn = document.getElementById('seSave');
   const saveAsBtn = document.getElementById('seSaveAs');
   if (replaceBtn.textContent !== 'Replace original…') throw new Error('replace label ' + replaceBtn.textContent);

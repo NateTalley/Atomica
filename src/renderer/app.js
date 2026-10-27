@@ -46,8 +46,11 @@ let selectedPaths = new Set(); // checked list rows, keyed by sample path
 let libraryPaths = new Set(); // paths in the current dataset; reused by affectedPaths
 let selectAnchor = null;       // path of the last checkbox click, for shift-click range
 let pendingVolumes = new Map(); // path -> level while a volume save is in flight
-let sectionByPath = new Map(); // path -> { start, end, loop, rate } fractions and sample-wide playback rate
+let sectionByPath = new Map(); // applied library boundaries: path -> { start, end, loop, rate }
+let sectionDraft = null;       // editor copy; the library keeps sectionByPath until the user applies it
+let sectionDraftDirty = false;
 let sectionEditPath = null;    // sample whose section editor is open
+let excludedPaths = new Set(); // hidden from the library; files stay on disk
 let auditionMode = null;       // 'section' plays the selection once when loop is off
 let sectionDrag = null;
 let sectionSaving = false;
@@ -72,11 +75,21 @@ async function init() {
   });
 
   const st = await api.getState();
-  params = st.params;
+  params = st.params || {};
+  if (params.maxDurationOn == null) params.maxDurationOn = true;
+  if (!Number.isFinite(Number(params.maxDuration)) || Number(params.maxDuration) <= 0) params.maxDuration = 59;
   playlists = st.playlists || [];
+  excludedPaths = new Set(st.excluded || []);
+  if (st.sections) {
+    for (const [p, sec] of Object.entries(st.sections)) {
+      const clean = SectionEditor.normalizeSection(sec);
+      if (clean) sectionByPath.set(p, clean);
+    }
+  }
   try { tagVocab = await api.tagsVocab(); } catch { /* keep defaults */ }
   $('useEmb').checked = st.useEmbeddings;
   renderFolders(st.folders);
+  renderExcluded();
   renderPlaylists();
   buildControls();
   syncControls();
@@ -120,11 +133,18 @@ function applyDataset(ds, computeIfNeeded) {
     libraryPaths = have;
     for (const p of [...selectedPaths]) if (!have.has(p)) selectedPaths.delete(p);
     if (selectAnchor && !have.has(selectAnchor)) selectAnchor = null;
+    if (Array.isArray(ds.excluded)) {
+      excludedPaths = new Set(ds.excluded);
+      renderExcluded();
+    }
     if (sectionEditPath && !have.has(sectionEditPath) && !sectionSaving) {
-      sectionByPath.delete(sectionEditPath);
+      sectionDraft = null;
+      sectionDraftDirty = false;
       sectionEditPath = null;
     }
-    for (const p of [...sectionByPath.keys()]) if (!have.has(p) && p !== sectionEditPath) sectionByPath.delete(p);
+    for (const p of [...sectionByPath.keys()]) {
+      if (!have.has(p) && !excludedPaths.has(p) && p !== sectionEditPath) sectionByPath.delete(p);
+    }
   } else {
     libraryPaths = new Set();
   }
@@ -141,7 +161,6 @@ function applyDataset(ds, computeIfNeeded) {
   restyle();
   updateStatus();
   refreshList(true);
-  if (params && params.view === 'editor') ensureEditorSample();
   syncSectionChrome();
   if (!ds.n) return;
   if (params.mode === 'axes') {
@@ -215,7 +234,23 @@ function buildControls() {
     if (masterGain && audioCtx) masterGain.gain.setValueAtTime(params.volume, audioCtx.currentTime);
     persistParams();
   });
-  $('search').addEventListener('input', () => { filterText = $('search').value.toLowerCase(); restyle(); refreshList(true); });
+  $('search').addEventListener('input', () => { filterText = $('search').value.toLowerCase(); restyle(); refreshList(true); updateStatus(); });
+  $('maxDurOn').addEventListener('change', () => {
+    params.maxDurationOn = $('maxDurOn').checked;
+    persistParams();
+    restyle();
+    refreshList(true);
+    updateStatus();
+  });
+  $('maxDur').addEventListener('change', () => {
+    const n = Math.round(Number($('maxDur').value));
+    params.maxDuration = Number.isFinite(n) ? Math.min(3600, Math.max(1, n)) : 59;
+    $('maxDur').value = String(params.maxDuration);
+    persistParams();
+    restyle();
+    refreshList(true);
+    updateStatus();
+  });
   $('clearFilters').addEventListener('click', () => {
     filterKind.clear();
     filterInstr.clear();
@@ -281,12 +316,56 @@ function syncControls() {
   const vol = params.volume == null ? 0.9 : params.volume;
   $('volume').value = Math.round(vol * 100);
   $('volumeVal').textContent = `${Math.round(vol * 100)}%`;
+  $('maxDurOn').checked = params.maxDurationOn !== false;
+  const maxSec = Number(params.maxDuration);
+  $('maxDur').value = String(Number.isFinite(maxSec) && maxSec > 0 ? maxSec : 59);
   setMode(params.mode, true);
 }
 
-function setView(view, initial = false) {
+let viewChange = null;
+
+function highlightedEditorPath() {
+  if (!dataset || !dataset.paths) return null;
+  const playingPath = playingIdx >= 0 && playingIdx < dataset.n ? dataset.paths[playingIdx] : null;
+  const path = ListControls.editorTarget({
+    playingPath,
+    anchorPath: selectAnchor,
+    anchorSelected: !!(selectAnchor && selectedPaths.has(selectAnchor)),
+  });
+  return path && dataset.paths.includes(path) ? path : null;
+}
+
+async function setView(view, initial = false) {
+  const next = view === 'list' || view === 'editor' ? view : 'map';
+  if (!initial && params && params.view === 'editor' && next !== 'editor') {
+    if (viewChange) return viewChange;
+    viewChange = (async () => {
+      try {
+        await confirmBoundaries();
+        sectionDraft = null;
+        sectionDraftDirty = false;
+        sectionEditPath = null;
+        applyView(next, false);
+      } finally {
+        viewChange = null;
+      }
+    })();
+    return viewChange;
+  }
+  if (next === 'editor' && !sectionEditPath && !initial) {
+    const path = highlightedEditorPath();
+    if (path) {
+      sectionEditPath = path;
+      loadDraft(path);
+    }
+  }
+  applyView(next, initial);
+}
+
+function applyView(view, initial) {
   params.view = view === 'list' || view === 'editor' ? view : 'map';
-  if (params.view === 'editor') ensureEditorSample();
+  const more = $('seMoreMenu');
+  if (more && params.view !== 'editor') more.hidden = true;
   $('viewMap').classList.toggle('active', params.view === 'map');
   $('viewList').classList.toggle('active', params.view === 'list');
   $('viewEditor').classList.toggle('active', params.view === 'editor');
@@ -308,7 +387,7 @@ function updateStatusHints() {
   if (params.view === 'list') {
     $('statusRight').innerHTML = 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;double-click type&nbsp;=&nbsp;loop / one-shot&nbsp;&nbsp;·&nbsp;&nbsp;drag waveform&nbsp;=&nbsp;scrub&nbsp;&nbsp;·&nbsp;&nbsp;scissors&nbsp;=&nbsp;editor&nbsp;&nbsp;·&nbsp;&nbsp;drag row&nbsp;=&nbsp;drop into DAW';
   } else if (params.view === 'editor') {
-    $('statusRight').innerHTML = 'drag waveform&nbsp;=&nbsp;region&nbsp;&nbsp;·&nbsp;&nbsp;loop section&nbsp;=&nbsp;repeat it&nbsp;&nbsp;·&nbsp;&nbsp;speed&nbsp;=&nbsp;whole sample&nbsp;&nbsp;·&nbsp;&nbsp;save as new&nbsp;=&nbsp;keep the original';
+    $('statusRight').innerHTML = 'drag waveform&nbsp;=&nbsp;region&nbsp;&nbsp;·&nbsp;&nbsp;pause / stop&nbsp;&nbsp;·&nbsp;&nbsp;leaving asks before the library uses the boundaries&nbsp;&nbsp;·&nbsp;&nbsp;save as new&nbsp;=&nbsp;keep the original';
   } else {
     $('statusRight').innerHTML = 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;drag star&nbsp;=&nbsp;drop into DAW&nbsp;&nbsp;·&nbsp;&nbsp;right-click&nbsp;=&nbsp;show in Explorer&nbsp;&nbsp;·&nbsp;&nbsp;wheel&nbsp;=&nbsp;zoom';
   }
@@ -391,6 +470,68 @@ function renderFolders(folders) {
     li.append(name, x);
     ul.appendChild(li);
   });
+}
+
+function renderExcluded() {
+  const wrap = $('excludedWrap');
+  const ul = $('excludedList');
+  if (!wrap || !ul) return;
+  const paths = [...excludedPaths].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  wrap.hidden = paths.length === 0;
+  ul.replaceChildren();
+  for (const p of paths) {
+    const li = document.createElement('li');
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = p.split(/[/\\]/).pop();
+    name.title = p;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Restore';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      restoreExcluded([p]);
+    });
+    li.append(name, btn);
+    ul.appendChild(li);
+  }
+}
+
+async function excludeSamples(paths) {
+  try {
+    const next = await api.excludeSamples(paths);
+    excludedPaths = new Set(next);
+    for (const p of paths) selectedPaths.delete(p);
+    if (selectAnchor && !selectedPaths.has(selectAnchor)) selectAnchor = null;
+    renderExcluded();
+  } catch (e) {
+    showNotice({ msg: `Couldn't exclude: ${e.message}` });
+  }
+}
+
+async function restoreExcluded(paths) {
+  try {
+    const next = await api.restoreSamples(paths);
+    excludedPaths = new Set(next);
+    renderExcluded();
+  } catch (e) {
+    showNotice({ msg: `Couldn't restore: ${e.message}` });
+  }
+}
+
+async function transcribeSamples(paths) {
+  try {
+    const result = await api.transcribe(paths);
+    const n = result && result.transcribed ? result.transcribed : 0;
+    const failed = result && result.failed ? result.failed : 0;
+    showNotice({
+      msg: failed
+        ? `Transcribed ${n}. ${failed} failed${result.error ? `: ${result.error}` : ''}.`
+        : `Transcribed ${n} sample${n === 1 ? '' : 's'}. Search matches the lyric text.`,
+    });
+  } catch (e) {
+    showNotice({ msg: `Couldn't transcribe: ${e.message}` });
+  }
 }
 
 // ------------------------------------------------------------ axes mode layout
@@ -559,6 +700,9 @@ function sampleVisible(i) {
     const g = (dataset.genres && dataset.genres[i]) || '';
     if (!filterGenre.has(g)) return false;
   }
+  const maxOn = !params || params.maxDurationOn !== false;
+  const maxSec = params && params.maxDuration != null ? params.maxDuration : 59;
+  if (!ListControls.withinMaxDuration(dataset.features.duration[i], maxOn, maxSec)) return false;
   if (!filterText) return true;
   const kind = dataset.kinds && dataset.kinds[i];
   const bpm = dataset.bpms && dataset.bpms[i];
@@ -569,6 +713,7 @@ function sampleVisible(i) {
     dataset.genres && dataset.genres[i] || '',
     kind === 'loop' ? 'loop' : kind === 'oneshot' ? 'one-shot oneshot' : '',
     bpm != null ? `${bpm} bpm` : '',
+    dataset.lyrics && dataset.lyrics[i] || '',
   ].join(' ').toLowerCase();
   return hay.includes(filterText);
 }
@@ -943,7 +1088,8 @@ function paintListRow(row, idx) {
   row.querySelector('.list-dur').textContent = dur != null ? formatDur(dur) : '—';
   const name = row.querySelector('.list-name');
   name.textContent = dataset.names[idx];
-  name.title = dataset.paths[idx];
+  const lyricLine = dataset.lyrics && dataset.lyrics[idx];
+  name.title = lyricLine ? `${dataset.paths[idx]}\n${lyricLine}` : dataset.paths[idx];
   const kind = dataset.kinds ? dataset.kinds[idx] : null;
   const kindEl = row.querySelector('.list-kind');
   const bpm = dataset.bpms ? dataset.bpms[idx] : null;
@@ -1207,9 +1353,15 @@ function handleHover(idx, mx, my) {
   if (f.pitch[idx] != null) parts.push(noteName(f.pitch[idx]));
   if (f.brightness[idx] != null) parts.push(`${Math.round(Math.pow(2, f.brightness[idx]))} Hz`);
   if (f.loudness[idx] != null) parts.push(`${f.loudness[idx].toFixed(1)} dB`);
-  tip.innerHTML = `<div class="t-name"></div><div class="t-meta"></div>`;
+  tip.innerHTML = `<div class="t-name"></div><div class="t-meta"></div><div class="t-lyrics" hidden></div>`;
   tip.querySelector('.t-name').textContent = dataset.names[idx];
   tip.querySelector('.t-meta').textContent = `${dataset.folders[idx]}  ·  ${parts.join('  ·  ')}`;
+  const lyrics = dataset.lyrics && dataset.lyrics[idx];
+  const lyricEl = tip.querySelector('.t-lyrics');
+  if (lyrics) {
+    lyricEl.hidden = false;
+    lyricEl.textContent = lyrics;
+  }
   tip.hidden = false;
   const wrap = $('mapWrap');
   const tw = tip.offsetWidth, th = tip.offsetHeight;
@@ -1238,6 +1390,7 @@ let scrubUp = null;
 let playheadRaf = 0;
 let playGen = 0;
 let playPending = false;
+let paused = false;
 let volumeSaveTimer = null;
 let volumeSaveGen = 0;
 
@@ -1286,6 +1439,7 @@ function stopPlayhead() {
 function stopAudio() {
   playGen++;
   playPending = false;
+  paused = false;
   playlistPlayQueue = null;
   playlistPlayPos = -1;
   scrubbing = false;
@@ -1297,6 +1451,35 @@ function stopAudio() {
   stopSource();
   stopPlayhead();
   clearPlayingHighlight();
+  syncTransportButtons();
+}
+
+function pauseAudio() {
+  if (!dataset || !sectionEditPath) return;
+  const idx = dataset.paths.indexOf(sectionEditPath);
+  if (idx < 0 || playingIdx !== idx) return;
+  if (paused) {
+    if (!playBuf) return;
+    paused = false;
+    beginSource(playBuf, playOffset, playGen, { resume: true });
+    return;
+  }
+  if (!currentSource && !playPending) return;
+  playOffset = currentPlaySec();
+  playGen++;
+  stopSource();
+  stopPlayhead();
+  playPending = false;
+  paused = true;
+  paintPlayingWave();
+  syncTransportButtons();
+}
+
+function syncTransportButtons() {
+  const btn = $('sePause');
+  if (!btn) return;
+  const onThis = !!(sectionEditPath && dataset && playingIdx >= 0 && dataset.paths[playingIdx] === sectionEditPath);
+  btn.textContent = paused && onThis ? 'Resume' : 'Pause';
 }
 
 function currentPlaySec() {
@@ -1337,7 +1520,8 @@ function kickPlayhead() {
   playheadRaf = requestAnimationFrame(loop);
 }
 
-function beginSource(buf, offsetSec, gen) {
+function beginSource(buf, offsetSec, gen, opts) {
+  const resume = !!(opts && opts.resume);
   ensureAudio();
   stopSource();
   const src = audioCtx.createBufferSource();
@@ -1349,17 +1533,24 @@ function beginSource(buf, offsetSec, gen) {
   const dur = buf.duration || 0;
   const bounds = sectionBounds(playingIdx, dur);
   // One playbackRate on the source. A looped section uses the same rate as the rest of this sample.
-  const rate = bounds ? bounds.rate : 1;
+  const rate = bounds ? SectionEditor.clampRate(bounds.rate) : 1;
   src.playbackRate.value = rate;
   let t = Math.max(0, Math.min(offsetSec, Math.max(0, dur - 0.01)));
+  const inEditor = !!(params && params.view === 'editor' && sectionEditPath
+    && dataset && playingIdx >= 0 && dataset.paths[playingIdx] === sectionEditPath);
+  const trimmed = !!(bounds && SectionEditor.isTrimFraction(bounds.start, bounds.end) && bounds.endSec > bounds.startSec);
   if (bounds && bounds.loop && bounds.endSec > bounds.startSec) {
     src.loop = true;
     src.loopStart = bounds.startSec;
     src.loopEnd = bounds.endSec;
     t = SectionEditor.loopStartOffset(bounds.startSec, bounds.endSec, t);
     src.start(0, t);
-  } else if (bounds && auditionMode === 'section' && bounds.endSec > bounds.startSec) {
-    const start = SectionEditor.loopStartOffset(bounds.startSec, bounds.endSec, bounds.startSec);
+  } else if (trimmed && (auditionMode === 'section' || !inEditor)) {
+    let start;
+    if (resume) start = Math.min(bounds.endSec - 0.01, Math.max(bounds.startSec, t));
+    else if (t < bounds.startSec || t >= bounds.endSec || auditionMode === 'section') {
+      start = SectionEditor.loopStartOffset(bounds.startSec, bounds.endSec, bounds.startSec);
+    } else start = t;
     t = start;
     src.start(0, t, Math.max(0.01, bounds.endSec - start));
   } else {
@@ -1369,7 +1560,9 @@ function beginSource(buf, offsetSec, gen) {
   playOffset = t;
   playStartedAt = audioCtx.currentTime;
   playPending = false;
+  paused = false;
   kickPlayhead();
+  syncTransportButtons();
 }
 
 function onSourceEnded(gen) {
@@ -1392,6 +1585,7 @@ function onSourceEnded(gen) {
   }
   playBuf = null;
   clearPlayingHighlight();
+  syncTransportButtons();
 }
 
 function seekFractionFor(idx, fraction) {
@@ -1426,6 +1620,7 @@ async function loadAudioBuffer(idx) {
 
 async function startPlayback(idx, frac, mode) {
   if (!dataset || idx < 0 || idx >= dataset.n) return;
+  paused = false;
   auditionMode = mode || null;
   queuedFrac = Math.min(1, Math.max(0, frac || 0));
   if (playingIdx === idx && playBuf && !playPending) {
@@ -1459,7 +1654,7 @@ async function startPlayback(idx, frac, mode) {
 
 function handleClick(idx) {
   if (!dataset || scrubbing) return;
-  if (playingIdx === idx && (currentSource || playPending)) {
+  if (playingIdx === idx && (currentSource || playPending || paused)) {
     stopAudio();
     return;
   }
@@ -1568,10 +1763,11 @@ function updateStatus() {
   const withEmb = dataset.hasEmb.filter(Boolean).length;
   let txt = `${dataset.n.toLocaleString()} samples`;
   if (withEmb) txt += `  ·  ${withEmb.toLocaleString()} with AI embedding`;
-  if (filterText) {
+  const lengthOn = params && params.maxDurationOn !== false;
+  if (filterText || lengthOn || filterKind.size || filterInstr.size || filterGenre.size) {
     let vis = 0;
     for (let i = 0; i < dataset.n; i++) if (sampleVisible(i)) vis++;
-    txt += `  ·  ${vis.toLocaleString()} match filter`;
+    txt += `  ·  ${vis.toLocaleString()} shown`;
   }
   $('statusLeft').textContent = txt;
 }
@@ -1617,7 +1813,7 @@ function rebuildPlaylistPathSets() {
   }
 }
 
-function askName({ title, initial = '', confirmLabel = 'Create', hideInput = false }) {
+function askName({ title, initial = '', confirmLabel = 'Create', cancelLabel = 'Cancel', hideInput = false }) {
   return new Promise((resolve) => {
     const overlay = $('nameDialog');
     const input = $('nameDialogInput');
@@ -1625,6 +1821,7 @@ function askName({ title, initial = '', confirmLabel = 'Create', hideInput = fal
     const cancel = $('nameDialogCancel');
     $('nameDialogTitle').textContent = title;
     ok.textContent = confirmLabel;
+    cancel.textContent = cancelLabel;
     input.value = initial;
     input.hidden = hideInput;
     overlay.hidden = false;
@@ -1952,6 +2149,14 @@ function showContextMenu(idx, x, y) {
   }
 
   items.push({ label: 'Edit section', action: () => openSectionEditor(idx) });
+  items.push({
+    label: paths.length > 1 ? `Exclude ${paths.length} samples from library` : 'Exclude from library',
+    action: () => excludeSamples(paths),
+  });
+  items.push({
+    label: paths.length > 1 ? `Transcribe lyrics (${paths.length})` : 'Transcribe lyrics',
+    action: () => transcribeSamples(paths),
+  });
   items.push({ label: 'Show in Explorer', action: () => api.reveal(dataset.paths[idx]) });
 
   // build menu DOM
@@ -1996,7 +2201,9 @@ function showContextMenu(idx, x, y) {
 
 function sectionForIdx(idx) {
   if (!dataset || !Number.isFinite(idx) || idx < 0 || idx >= dataset.n) return null;
-  return sectionByPath.get(dataset.paths[idx]) || null;
+  const path = dataset.paths[idx];
+  if (path === sectionEditPath && sectionDraft && params && params.view === 'editor') return sectionDraft;
+  return sectionByPath.get(path) || null;
 }
 
 function sectionBounds(idx, duration) {
@@ -2005,45 +2212,72 @@ function sectionBounds(idx, duration) {
   return { ...sec, ...SectionEditor.sectionSeconds(sec.start, sec.end, duration) };
 }
 
-function ensureSection(path) {
-  let sec = sectionByPath.get(path);
-  if (!sec) {
-    sec = { start: 0.25, end: 0.75, loop: true, rate: 1 };
-    sectionByPath.set(path, sec);
-  }
-  return sec;
+function loadDraft(path) {
+  const applied = sectionByPath.get(path);
+  const clean = applied ? SectionEditor.normalizeSection(applied) : null;
+  sectionDraft = clean || { start: 0.25, end: 0.75, loop: true, rate: 1 };
+  sectionDraftDirty = false;
 }
 
-function ensureEditorSample() {
-  if (!dataset || !dataset.n || !dataset.paths) return;
-  const have = new Set(dataset.paths);
-  if (sectionEditPath && have.has(sectionEditPath)) {
-    ensureSection(sectionEditPath);
+function ensureDraft() {
+  if (!sectionEditPath) return null;
+  if (!sectionDraft) loadDraft(sectionEditPath);
+  return sectionDraft;
+}
+
+function ensureSection(path) {
+  if (path && path === sectionEditPath) return ensureDraft();
+  return sectionByPath.get(path) || null;
+}
+
+function markDraftDirty() {
+  sectionDraftDirty = true;
+}
+
+async function confirmBoundaries() {
+  if (!sectionDraftDirty || !sectionEditPath || !sectionDraft) return;
+  const path = sectionEditPath;
+  const draft = {
+    start: sectionDraft.start,
+    end: sectionDraft.end,
+    loop: !!sectionDraft.loop,
+    rate: sectionDraft.rate,
+  };
+  sectionDraftDirty = false;
+  const idx = dataset ? dataset.paths.indexOf(path) : -1;
+  const name = idx >= 0 ? dataset.names[idx] : 'this sample';
+  const ok = await askName({
+    title: `Apply these boundaries to "${name}" in the library?`,
+    confirmLabel: 'Apply',
+    cancelLabel: "Don't apply",
+    hideInput: true,
+  });
+  if (ok == null) return;
+  const clean = SectionEditor.normalizeSection(draft);
+  if (!clean) return;
+  sectionByPath.set(path, clean);
+  try {
+    await api.setSection(path, clean);
+  } catch (e) {
+    showNotice({ msg: `Couldn't save boundaries: ${e.message}` });
+  }
+}
+
+async function openSectionEditor(idx) {
+  if (!dataset || !Number.isFinite(idx) || idx < 0 || idx >= dataset.n) return;
+  const path = dataset.paths[idx];
+  if (params && params.view === 'editor' && sectionEditPath === path) {
+    syncSectionChrome();
     return;
   }
-  let path = null;
-  if (selectAnchor && selectedPaths.has(selectAnchor) && have.has(selectAnchor)) path = selectAnchor;
-  const order = listFiltered.length && listFiltered.every((i) => i >= 0 && i < dataset.n)
-    ? listFiltered
-    : [...Array(dataset.n).keys()];
-  if (!path) {
-    for (const i of order) {
-      const candidate = dataset.paths[i];
-      if (selectedPaths.has(candidate)) { path = candidate; break; }
-    }
+  if (params && params.view === 'editor' && sectionEditPath && sectionEditPath !== path) {
+    await confirmBoundaries();
+    sectionDraft = null;
+    sectionDraftDirty = false;
   }
-  if (!path && playingIdx >= 0 && playingIdx < dataset.n) path = dataset.paths[playingIdx];
-  if (!path) path = dataset.paths[order[0]];
-  if (!path || !have.has(path)) return;
   sectionEditPath = path;
-  ensureSection(path);
-}
-
-function openSectionEditor(idx) {
-  if (!dataset || !Number.isFinite(idx) || idx < 0 || idx >= dataset.n) return;
-  sectionEditPath = dataset.paths[idx];
-  ensureSection(sectionEditPath);
-  if (!params || params.view !== 'editor') setView('editor');
+  loadDraft(path);
+  if (!params || params.view !== 'editor') applyView('editor', false);
   else syncSectionChrome();
 }
 
@@ -2091,6 +2325,7 @@ function syncSectionEditor() {
   const trim = SectionEditor.isTrimFraction(sec.start, sec.end);
   $('seSave').disabled = !trim;
   $('seSaveAs').disabled = !trim;
+  syncTransportButtons();
   drawSectionWave();
 }
 
@@ -2111,7 +2346,7 @@ function drawSectionWave() {
   ctx.fillStyle = 'rgba(26, 20, 14, 0.9)';
   ctx.fillRect(0, 0, w, h);
   const idx = dataset ? dataset.paths.indexOf(sectionEditPath) : -1;
-  const sec = sectionByPath.get(sectionEditPath);
+  const sec = sectionDraft;
   const mid = h / 2;
   ctx.fillStyle = '#ffc107';
   if (idx >= 0 && dataset.peaks) {
@@ -2153,7 +2388,7 @@ function sectionEventFrac(e) {
 }
 
 function sectionEdgeAt(e) {
-  const sec = sectionEditPath && sectionByPath.get(sectionEditPath);
+  const sec = sectionEditPath && sectionDraft;
   const rect = $('seWave').getBoundingClientRect();
   if (!sec || rect.width <= 0) return null;
   const x = e.clientX - rect.left;
@@ -2206,6 +2441,7 @@ function bindSectionEditor() {
     else next = SectionEditor.sectionFromDrag(sectionDrag.origin, frac, min);
     sec.start = next.start;
     sec.end = next.end;
+    markDraftDirty();
     syncSectionEditor();
   });
   const endDrag = () => {
@@ -2235,6 +2471,7 @@ function bindSectionEditor() {
   $('seLoop').addEventListener('change', () => {
     if (!sectionEditPath) return;
     ensureSection(sectionEditPath).loop = $('seLoop').checked;
+    markDraftDirty();
     applySectionToPlaying();
     if (params && params.view === 'list') renderListWindow();
   });
@@ -2242,6 +2479,7 @@ function bindSectionEditor() {
     if (!sectionEditPath) return;
     const sec = ensureSection(sectionEditPath);
     sec.rate = SectionEditor.clampRate(parseInt($('seRate').value, 10) / 100);
+    markDraftDirty();
     $('seRateVal').textContent = SectionEditor.formatRate(sec.rate);
     const now = performance.now();
     const apply = () => {
@@ -2262,12 +2500,29 @@ function bindSectionEditor() {
     sec.end = 1;
     sec.loop = false;
     sec.rate = 1;
+    markDraftDirty();
     auditionMode = null;
     applySectionToPlaying();
     syncSectionEditor();
     if (params && params.view === 'list') renderListWindow();
   });
-  $('seSave').addEventListener('click', () => saveOpenSection('replace'));
+  $('sePause').addEventListener('click', () => pauseAudio());
+  $('seStop').addEventListener('click', () => stopAudio());
+  $('seMore').addEventListener('click', () => {
+    const menu = $('seMoreMenu');
+    menu.hidden = !menu.hidden;
+    $('seMore').setAttribute('aria-expanded', menu.hidden ? 'false' : 'true');
+  });
+  document.addEventListener('click', (e) => {
+    const menu = $('seMoreMenu');
+    if (!menu || menu.hidden || e.target.closest('#seMore')) return;
+    menu.hidden = true;
+    $('seMore').setAttribute('aria-expanded', 'false');
+  });
+  $('seSave').addEventListener('click', () => {
+    $('seMoreMenu').hidden = true;
+    saveOpenSection('replace');
+  });
   $('seSaveAs').addEventListener('click', () => saveOpenSection('copy'));
 }
 
@@ -2314,10 +2569,6 @@ async function saveOpenSection(mode) {
       channels.push(buf.getChannelData(c).slice(range.startFrame, range.endFrame));
     }
     if (playingIdx === idx) stopAudio();
-    if (mode === 'replace') {
-      sec.start = 0;
-      sec.end = 1;
-    }
     const result = await api.saveSection({
       path,
       mode,
@@ -2327,10 +2578,13 @@ async function saveOpenSection(mode) {
     });
     // A copy stays beside the original. A replace only moves the editor when the
     // file itself had to change extension (an mp3 cannot keep a wav payload).
-    if (mode === 'replace' && result && result.path && result.path !== path) {
+    if (mode === 'replace') {
+      const dest = (result && result.path) || path;
       sectionByPath.delete(path);
-      sectionByPath.set(result.path, sec);
-      if (sectionEditPath === path) sectionEditPath = result.path;
+      if (dest !== path) sectionByPath.delete(dest);
+      sectionEditPath = dest;
+      sectionDraft = { start: 0.25, end: 0.75, loop: true, rate: 1 };
+      sectionDraftDirty = false;
     }
     const label = (result && result.name) || name;
     const extra = result && result.warning ? ` Analysis warning: ${result.warning}` : '';
