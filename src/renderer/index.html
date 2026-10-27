@@ -151,6 +151,28 @@
     </div>
     <div id="notice" hidden></div>
     <div id="ctxMenu" hidden></div>
+    <div id="sectionEditor" hidden>
+      <div class="se-head">
+        <span id="seTitle"></span>
+        <span id="seTimes"></span>
+        <button id="seClose" type="button" title="Close the section editor">✕</button>
+      </div>
+      <canvas id="seWave" draggable="false"></canvas>
+      <div class="se-controls">
+        <button id="sePlay" type="button">Play section</button>
+        <label class="se-loop" title="Loop just the selected section">
+          <input type="checkbox" id="seLoop" />
+          <span>Loop section</span>
+        </label>
+        <label class="se-speed" title="Sample-wide playback speed. The audition uses one rate, so pitch changes with it. Saving the cut keeps the original speed.">
+          Speed <span id="seRateVal">100%</span>
+          <input type="range" id="seRate" min="25" max="400" step="1" value="100" />
+        </label>
+        <button id="seReset" type="button" title="Play the whole sample at full speed">Reset</button>
+        <button id="seSave" type="button" title="Overwrite this file with the selected section">Save cut</button>
+        <button id="seSaveAs" type="button" class="primary" title="Write the section to a new file and keep the original">Save as new</button>
+      </div>
+    </div>
   </div>
 
   <div id="nameDialog" hidden>
@@ -170,6 +192,7 @@
   </div>
 
   <script src="list-controls.js"></script>
+  <script src="section-editor.js"></script>
   <script src="starmap.js"></script>
   <script src="app.js"></script>
 </body>
