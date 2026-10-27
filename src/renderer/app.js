@@ -45,6 +45,11 @@ let editingIdx = -1;           // dataset index whose row has its tag editor ope
 let selectedPaths = new Set(); // checked list rows, keyed by sample path
 let selectAnchor = null;       // path of the last checkbox click, for shift-click range
 let pendingVolumes = new Map(); // path -> level while a volume save is in flight
+let sectionByPath = new Map(); // path -> { start, end, loop, rate } fractions and sample-wide playback rate
+let sectionEditPath = null;    // sample whose section editor is open
+let auditionMode = null;       // 'section' plays the selection once when loop is off
+let sectionDrag = null;
+let sectionSaving = false;
 let tagVocab = { instruments: [], genres: [], kinds: ['oneshot', 'loop'] };
 let osDragPath = null;         // sample path of the current OS drag-out (drop into DAW or onto a playlist)
 const PEAK_BINS = 128;
@@ -84,11 +89,12 @@ async function init() {
   api.onProgress(showProgress);
   api.onNotice(showNotice);
 
-  // Escape closes an open row editor first; only stops playback when none is open.
+  // Escape leaves the editor or an open row editor before it stops playback.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!$('nameDialog').hidden) return;
     if (editingIdx >= 0) closeRowEditor();
+    else if (params && params.view === 'editor') setView('list');
     else stopAudio();
   });
 
@@ -112,6 +118,11 @@ function applyDataset(ds, computeIfNeeded) {
     const have = new Set(ds.paths);
     for (const p of [...selectedPaths]) if (!have.has(p)) selectedPaths.delete(p);
     if (selectAnchor && !have.has(selectAnchor)) selectAnchor = null;
+    if (sectionEditPath && !have.has(sectionEditPath) && !sectionSaving) {
+      sectionByPath.delete(sectionEditPath);
+      sectionEditPath = null;
+    }
+    for (const p of [...sectionByPath.keys()]) if (!have.has(p) && p !== sectionEditPath) sectionByPath.delete(p);
   }
   dataset = ds;
   if (dataset && dataset.peaks && !(dataset.peaks instanceof Uint8Array)) {
@@ -126,6 +137,8 @@ function applyDataset(ds, computeIfNeeded) {
   restyle();
   updateStatus();
   refreshList(true);
+  if (params && params.view === 'editor') ensureEditorSample();
+  syncSectionChrome();
   if (!ds.n) return;
   if (params.mode === 'axes') {
     starmap.setPositions(axesPositions(), false);
@@ -217,7 +230,9 @@ function buildControls() {
 
   $('viewMap').addEventListener('click', () => setView('map'));
   $('viewList').addEventListener('click', () => setView('list'));
-  $('viewShuffle').addEventListener('click', () => {
+  $('viewEditor').addEventListener('click', () => setView('editor'));
+  $('viewShuffle').addEventListener('click', (e) => {
+    e.stopPropagation();
     listShuffled = true;
     for (const el of $('listHead').querySelectorAll('span')) el.classList.remove('sort-active');
     refreshList(true);
@@ -235,8 +250,12 @@ function buildControls() {
     refreshList(true);
   });
   $('listScroll').addEventListener('scroll', () => renderListWindow());
-  window.addEventListener('resize', () => { if (params && params.view === 'list') renderListWindow(); });
+  window.addEventListener('resize', () => {
+    if (params && params.view === 'list') renderListWindow();
+    if (sectionEditPath) drawSectionWave();
+  });
   bindListPointer();
+  bindSectionEditor();
   bindPlaylistControls();
   bindContextMenu();
 }
@@ -262,10 +281,11 @@ function syncControls() {
 }
 
 function setView(view, initial = false) {
-  params.view = view === 'list' ? 'list' : 'map';
+  params.view = view === 'list' || view === 'editor' ? view : 'map';
+  if (params.view === 'editor') ensureEditorSample();
   $('viewMap').classList.toggle('active', params.view === 'map');
   $('viewList').classList.toggle('active', params.view === 'list');
-  $('viewShuffle').hidden = params.view !== 'list';
+  $('viewEditor').classList.toggle('active', params.view === 'editor');
   if (params.view !== 'list') closeRowEditor(false);
   $('map').hidden = params.view !== 'map';
   $('listWrap').hidden = params.view !== 'list';
@@ -274,15 +294,20 @@ function setView(view, initial = false) {
   if (params.view === 'map') {
     starmap.dirty = true;
     starmap.fit();
-  } else {
+  } else if (params.view === 'list') {
     refreshList(true);
   }
+  syncSectionChrome();
 }
 
 function updateStatusHints() {
-  $('statusRight').innerHTML = params.view === 'list'
-    ? 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;double-click type&nbsp;=&nbsp;loop / one-shot&nbsp;&nbsp;·&nbsp;&nbsp;drag waveform&nbsp;=&nbsp;scrub&nbsp;&nbsp;·&nbsp;&nbsp;drag row&nbsp;=&nbsp;drop into DAW'
-    : 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;drag star&nbsp;=&nbsp;drop into DAW&nbsp;&nbsp;·&nbsp;&nbsp;right-click&nbsp;=&nbsp;show in Explorer&nbsp;&nbsp;·&nbsp;&nbsp;wheel&nbsp;=&nbsp;zoom';
+  if (params.view === 'list') {
+    $('statusRight').innerHTML = 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;double-click type&nbsp;=&nbsp;loop / one-shot&nbsp;&nbsp;·&nbsp;&nbsp;drag waveform&nbsp;=&nbsp;scrub&nbsp;&nbsp;·&nbsp;&nbsp;scissors&nbsp;=&nbsp;editor&nbsp;&nbsp;·&nbsp;&nbsp;drag row&nbsp;=&nbsp;drop into DAW';
+  } else if (params.view === 'editor') {
+    $('statusRight').innerHTML = 'drag waveform&nbsp;=&nbsp;region&nbsp;&nbsp;·&nbsp;&nbsp;loop section&nbsp;=&nbsp;repeat it&nbsp;&nbsp;·&nbsp;&nbsp;speed&nbsp;=&nbsp;whole sample&nbsp;&nbsp;·&nbsp;&nbsp;save as new&nbsp;=&nbsp;keep the original';
+  } else {
+    $('statusRight').innerHTML = 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;drag star&nbsp;=&nbsp;drop into DAW&nbsp;&nbsp;·&nbsp;&nbsp;right-click&nbsp;=&nbsp;show in Explorer&nbsp;&nbsp;·&nbsp;&nbsp;wheel&nbsp;=&nbsp;zoom';
+  }
 }
 
 function setMode(mode, initial = false) {
@@ -768,18 +793,28 @@ function makeListRow() {
   bpm.className = 'list-bpm';
   const tags = document.createElement('div');
   tags.className = 'list-tags';
+  const actions = document.createElement('div');
+  actions.className = 'list-actions';
+  const sectionBtn = document.createElement('button');
+  sectionBtn.className = 'list-section-btn';
+  sectionBtn.type = 'button';
+  sectionBtn.tabIndex = -1;
+  sectionBtn.textContent = '✂';
+  sectionBtn.title = 'Edit section';
   const edit = document.createElement('button');
   edit.className = 'list-edit-btn';
   edit.type = 'button';
   edit.tabIndex = -1;
   edit.textContent = '✎';
+  edit.title = 'Edit tags';
   const fav = document.createElement('button');
   fav.className = 'list-fav-btn';
   fav.type = 'button';
   fav.tabIndex = -1;
   fav.title = 'Add to favorites';
   fav.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
-  row.append(check, canvas, vol, dur, name, kind, bpm, tags, edit, fav);
+  actions.append(sectionBtn, edit, fav);
+  row.append(check, canvas, vol, dur, name, kind, bpm, tags, actions);
   row.addEventListener('change', (e) => {
     if (e.target.classList.contains('list-vol')) {
       flushVolumeSave();
@@ -880,6 +915,12 @@ function paintListRow(row, idx) {
   const path = dataset.paths[idx];
   row.classList.toggle('playing', idx === playingIdx);
   row.classList.toggle('selected', selectedPaths.has(path));
+  row.classList.toggle('sectioning', path === sectionEditPath);
+  const secBtn = row.querySelector('.list-section-btn');
+  const secState = sectionByPath.get(path);
+  secBtn.title = secState && secState.rate !== 1
+    ? `Edit section · ${SectionEditor.formatRate(secState.rate)}`
+    : 'Edit section';
   const check = row.querySelector('.list-check');
   check.checked = selectedPaths.has(path);
   const vol = row.querySelector('.list-vol');
@@ -988,6 +1029,15 @@ function drawWaveform(canvas, idx) {
     ctx.fillRect(i * barW, mid - bh / 2, Math.max(1, barW - 0.5), bh);
   }
   ctx.globalAlpha = 1;
+  const sec = sectionForIdx(idx);
+  if (sec && sec.end - sec.start < 0.999) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(0, 0, sec.start * w, h);
+    ctx.fillRect(sec.end * w, 0, Math.max(0, 1 - sec.end) * w, h);
+    ctx.fillStyle = '#fff6ea';
+    ctx.fillRect(Math.round(sec.start * w), 0, 1, h);
+    ctx.fillRect(Math.max(0, Math.round(sec.end * w) - 1), 0, 1, h);
+  }
   if (idx !== playingIdx || (!playBuf && scrubFrac == null && !playPending)) return;
   let frac = 0;
   if (scrubFrac != null) frac = scrubFrac;
@@ -1015,6 +1065,15 @@ function bindListPointer() {
       e.preventDefault();
       e.stopPropagation();
       onCheckClick(box, e.shiftKey);
+      return;
+    }
+    const secBtn = e.target.closest('.list-section-btn');
+    if (secBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const row = secBtn.closest('.list-row');
+      if (!row) return;
+      openSectionEditor(parseInt(row.dataset.idx, 10));
       return;
     }
     const fav = e.target.closest('.list-fav-btn');
@@ -1068,7 +1127,7 @@ function bindListPointer() {
     if (editingIdx >= 0 && !e.target.closest('select')) {
       if (!editRow || parseInt(editRow.dataset.idx, 10) !== editingIdx) closeRowEditor();
     }
-    if (e.target.closest('.list-check, .list-vol, .list-kind, select, .list-edit-btn, .list-fav-btn, canvas')) return;
+    if (e.target.closest('.list-check, .list-vol, .list-kind, select, .list-edit-btn, .list-section-btn, .list-fav-btn, canvas')) return;
     const chip = e.target.closest('.list-tags span');
     if (chip && chip.dataset.val) {
       toggleListTag(chip);
@@ -1226,6 +1285,7 @@ function stopAudio() {
   scrubbing = false;
   scrubFrac = null;
   queuedFrac = 0;
+  auditionMode = null;
   playBuf = null;
   endScrubListeners();
   stopSource();
@@ -1236,10 +1296,19 @@ function stopAudio() {
 function currentPlaySec() {
   if (!playBuf) return 0;
   if (!currentSource || !audioCtx) return playOffset;
-  return Math.min(playBuf.duration, Math.max(0, playOffset + (audioCtx.currentTime - playStartedAt)));
+  const rate = currentSource.playbackRate ? (currentSource.playbackRate.value || 1) : 1;
+  let t = playOffset + (audioCtx.currentTime - playStartedAt) * rate;
+  if (currentSource.loop && playBuf.duration > 0) {
+    const start = currentSource.loopStart || 0;
+    const end = currentSource.loopEnd > start ? currentSource.loopEnd : playBuf.duration;
+    const span = end - start;
+    if (span > 0 && t >= end) t = start + ((t - start) % span);
+  }
+  return Math.min(playBuf.duration, Math.max(0, t));
 }
 
 function paintPlayingWave() {
+  if (sectionEditPath && params && params.view === 'editor') drawSectionWave();
   if (!params || params.view !== 'list' || !$('listRows')) return;
   for (const row of $('listRows').children) {
     if (parseInt(row.dataset.idx, 10) === playingIdx) {
@@ -1272,8 +1341,24 @@ function beginSource(buf, offsetSec, gen) {
   src.connect(sampleGain).connect(masterGain);
   src.onended = () => onSourceEnded(gen);
   const dur = buf.duration || 0;
-  const t = Math.max(0, Math.min(offsetSec, Math.max(0, dur - 0.01)));
-  src.start(0, t);
+  const bounds = sectionBounds(playingIdx, dur);
+  // One playbackRate on the source. A looped section uses the same rate as the rest of this sample.
+  const rate = bounds ? bounds.rate : 1;
+  src.playbackRate.value = rate;
+  let t = Math.max(0, Math.min(offsetSec, Math.max(0, dur - 0.01)));
+  if (bounds && bounds.loop && bounds.endSec > bounds.startSec) {
+    src.loop = true;
+    src.loopStart = bounds.startSec;
+    src.loopEnd = bounds.endSec;
+    t = SectionEditor.loopStartOffset(bounds.startSec, bounds.endSec, t);
+    src.start(0, t);
+  } else if (bounds && auditionMode === 'section' && bounds.endSec > bounds.startSec) {
+    const start = SectionEditor.loopStartOffset(bounds.startSec, bounds.endSec, bounds.startSec);
+    t = start;
+    src.start(0, t, Math.max(0.01, bounds.endSec - start));
+  } else {
+    src.start(0, t);
+  }
   currentSource = src;
   playOffset = t;
   playStartedAt = audioCtx.currentTime;
@@ -1303,14 +1388,39 @@ function onSourceEnded(gen) {
   clearPlayingHighlight();
 }
 
+function seekFractionFor(idx, fraction) {
+  const sec = sectionForIdx(idx);
+  if (sec && sec.loop && sec.end > sec.start) return Math.min(sec.end, Math.max(sec.start, fraction));
+  return fraction;
+}
+
 function seekPlayback(fraction) {
   if (!playBuf || playingIdx < 0) return;
   const gen = playGen;
-  beginSource(playBuf, ListControls.scrubSeconds(fraction, playBuf.duration), gen);
+  const frac = seekFractionFor(playingIdx, fraction);
+  beginSource(playBuf, ListControls.scrubSeconds(frac, playBuf.duration), gen);
 }
 
-async function startPlayback(idx, frac) {
+async function loadAudioBuffer(idx) {
+  const bytes = await api.readAudio(dataset.paths[idx]);
+  ensureAudio();
+  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  try {
+    return await audioCtx.decodeAudioData(ab);
+  } catch {
+    // Chromium rejects ADPCM, A-law/mu-law and MP3-in-WAV; the main process
+    // decodes those itself (mono) so they can still be auditioned
+    const pcm = await api.decodeAudio(dataset.paths[idx]);
+    const data = pcm.data instanceof Float32Array ? pcm.data : new Float32Array(pcm.data.buffer || pcm.data);
+    const buf = audioCtx.createBuffer(1, data.length, pcm.sr);
+    buf.copyToChannel(data, 0);
+    return buf;
+  }
+}
+
+async function startPlayback(idx, frac, mode) {
   if (!dataset || idx < 0 || idx >= dataset.n) return;
+  auditionMode = mode || null;
   queuedFrac = Math.min(1, Math.max(0, frac || 0));
   if (playingIdx === idx && playBuf && !playPending) {
     seekPlayback(queuedFrac);
@@ -1328,20 +1438,7 @@ async function startPlayback(idx, frac) {
   if (params.view === 'list') renderListWindow();
   kickPlayhead();
   try {
-    const bytes = await api.readAudio(dataset.paths[idx]);
-    ensureAudio();
-    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    let buf;
-    try {
-      buf = await audioCtx.decodeAudioData(ab);
-    } catch {
-      // Chromium rejects ADPCM, A-law/mu-law and MP3-in-WAV; the main process
-      // decodes those itself (mono) so they can still be auditioned
-      const pcm = await api.decodeAudio(dataset.paths[idx]);
-      const data = pcm.data instanceof Float32Array ? pcm.data : new Float32Array(pcm.data.buffer || pcm.data);
-      buf = audioCtx.createBuffer(1, data.length, pcm.sr);
-      buf.copyToChannel(data, 0);
-    }
+    const buf = await loadAudioBuffer(idx);
     if (gen !== playGen) return;
     playBuf = buf;
     beginSource(buf, ListControls.scrubSeconds(queuedFrac, buf.duration), gen);
@@ -1370,6 +1467,7 @@ function canvasFraction(canvas, e) {
 
 function beginScrub(idx, canvas, e) {
   if (!dataset || !Number.isFinite(idx)) return;
+  auditionMode = null;
   endScrubListeners();
   scrubbing = true;
   scrubFrac = canvasFraction(canvas, e);
@@ -1513,7 +1611,7 @@ function rebuildPlaylistPathSets() {
   }
 }
 
-function askName({ title, initial = '', confirmLabel = 'Create' }) {
+function askName({ title, initial = '', confirmLabel = 'Create', hideInput = false }) {
   return new Promise((resolve) => {
     const overlay = $('nameDialog');
     const input = $('nameDialogInput');
@@ -1522,10 +1620,12 @@ function askName({ title, initial = '', confirmLabel = 'Create' }) {
     $('nameDialogTitle').textContent = title;
     ok.textContent = confirmLabel;
     input.value = initial;
+    input.hidden = hideInput;
     overlay.hidden = false;
 
     const finish = (value) => {
       overlay.hidden = true;
+      input.hidden = false;
       overlay.removeEventListener('click', onOverlay);
       cancel.removeEventListener('click', onCancel);
       ok.removeEventListener('click', onOk);
@@ -1551,7 +1651,7 @@ function askName({ title, initial = '', confirmLabel = 'Create' }) {
     ok.addEventListener('click', onOk);
     input.addEventListener('keydown', onKey);
     document.addEventListener('keydown', onEsc, true);
-    requestAnimationFrame(() => { input.focus(); input.select(); });
+    requestAnimationFrame(() => { if (!hideInput) { input.focus(); input.select(); } });
   });
 }
 
@@ -1836,6 +1936,7 @@ function showContextMenu(idx, x, y) {
     }
   }
 
+  items.push({ label: 'Edit section', action: () => openSectionEditor(idx) });
   items.push({ label: 'Show in Explorer', action: () => api.reveal(dataset.paths[idx]) });
 
   // build menu DOM
@@ -1877,6 +1978,365 @@ function showContextMenu(idx, x, y) {
 }
 
 // ---- sequential playlist playback ----
+
+function sectionForIdx(idx) {
+  if (!dataset || !Number.isFinite(idx) || idx < 0 || idx >= dataset.n) return null;
+  return sectionByPath.get(dataset.paths[idx]) || null;
+}
+
+function sectionBounds(idx, duration) {
+  const sec = sectionForIdx(idx);
+  if (!sec) return null;
+  return { ...sec, ...SectionEditor.sectionSeconds(sec.start, sec.end, duration) };
+}
+
+function ensureSection(path) {
+  let sec = sectionByPath.get(path);
+  if (!sec) {
+    sec = { start: 0.25, end: 0.75, loop: true, rate: 1 };
+    sectionByPath.set(path, sec);
+  }
+  return sec;
+}
+
+function ensureEditorSample() {
+  if (!dataset || !dataset.n || !dataset.paths) return;
+  const have = new Set(dataset.paths);
+  if (sectionEditPath && have.has(sectionEditPath)) {
+    ensureSection(sectionEditPath);
+    return;
+  }
+  let path = null;
+  if (selectAnchor && selectedPaths.has(selectAnchor) && have.has(selectAnchor)) path = selectAnchor;
+  const order = listFiltered.length && listFiltered.every((i) => i >= 0 && i < dataset.n)
+    ? listFiltered
+    : [...Array(dataset.n).keys()];
+  if (!path) {
+    for (const i of order) {
+      const candidate = dataset.paths[i];
+      if (selectedPaths.has(candidate)) { path = candidate; break; }
+    }
+  }
+  if (!path && playingIdx >= 0 && playingIdx < dataset.n) path = dataset.paths[playingIdx];
+  if (!path) path = dataset.paths[order[0]];
+  if (!path || !have.has(path)) return;
+  sectionEditPath = path;
+  ensureSection(path);
+}
+
+function openSectionEditor(idx) {
+  if (!dataset || !Number.isFinite(idx) || idx < 0 || idx >= dataset.n) return;
+  sectionEditPath = dataset.paths[idx];
+  ensureSection(sectionEditPath);
+  if (!params || params.view !== 'editor') setView('editor');
+  else syncSectionChrome();
+}
+
+function closeSectionEditor() {
+  sectionDrag = null;
+  if (params && params.view === 'editor') setView('list');
+}
+
+function syncSectionChrome() {
+  const editor = $('sectionEditor');
+  if (!editor) return;
+  const onEditor = !!(params && params.view === 'editor');
+  const haveSample = !!(onEditor && sectionEditPath && dataset && dataset.paths
+    && dataset.paths.includes(sectionEditPath));
+  editor.hidden = !onEditor;
+  const empty = $('seEmpty');
+  if (empty) empty.hidden = !onEditor || haveSample;
+  const wave = $('seWave');
+  const controls = editor.querySelector('.se-controls');
+  if (wave) wave.hidden = !haveSample;
+  if (controls) controls.hidden = !haveSample;
+  if (haveSample) syncSectionEditor();
+  else if (onEditor) {
+    $('seTitle').textContent = 'Editor';
+    $('seTimes').textContent = '';
+  }
+}
+
+function syncSectionEditor() {
+  if (!sectionEditPath || !$('sectionEditor') || $('sectionEditor').hidden) return;
+  const idx = dataset ? dataset.paths.indexOf(sectionEditPath) : -1;
+  if (idx < 0) return;
+  const sec = ensureSection(sectionEditPath);
+  $('seTitle').textContent = dataset.names[idx];
+  const dur = Number(dataset.features.duration[idx]) || 0;
+  const bounds = SectionEditor.sectionSeconds(sec.start, sec.end, dur);
+  const len = Math.max(0, bounds.endSec - bounds.startSec);
+  $('seTimes').textContent = dur
+    ? `${formatDur(bounds.startSec)} – ${formatDur(bounds.endSec)} · ${formatDur(len)}`
+    : '—';
+  $('seLoop').checked = !!sec.loop;
+  const rate = $('seRate');
+  if (document.activeElement !== rate) rate.value = String(Math.round(SectionEditor.clampRate(sec.rate) * 100));
+  $('seRateVal').textContent = SectionEditor.formatRate(sec.rate);
+  const trim = SectionEditor.isTrimFraction(sec.start, sec.end);
+  $('seSave').disabled = !trim;
+  $('seSaveAs').disabled = !trim;
+  drawSectionWave();
+}
+
+function drawSectionWave() {
+  const canvas = $('seWave');
+  if (!canvas || !sectionEditPath || $('sectionEditor').hidden) return;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(rect.width * dpr));
+  const h = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(26, 20, 14, 0.9)';
+  ctx.fillRect(0, 0, w, h);
+  const idx = dataset ? dataset.paths.indexOf(sectionEditPath) : -1;
+  const sec = sectionByPath.get(sectionEditPath);
+  const mid = h / 2;
+  ctx.fillStyle = '#ffc107';
+  if (idx >= 0 && dataset.peaks) {
+    const off = idx * PEAK_BINS;
+    const barW = w / PEAK_BINS;
+    for (let i = 0; i < PEAK_BINS; i++) {
+      const amp = (dataset.peaks[off + i] || 0) / 255;
+      const bh = Math.max(1, amp * (h * 0.86));
+      ctx.globalAlpha = 0.45 + amp * 0.55;
+      ctx.fillRect(i * barW, mid - bh / 2, Math.max(1, barW - 0.6), bh);
+    }
+  } else {
+    ctx.fillRect(0, mid - 1, w, 2);
+  }
+  ctx.globalAlpha = 1;
+  if (sec) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(0, 0, sec.start * w, h);
+    ctx.fillRect(sec.end * w, 0, Math.max(0, 1 - sec.end) * w, h);
+    ctx.fillStyle = 'rgba(255, 193, 7, 0.16)';
+    ctx.fillRect(sec.start * w, 0, Math.max(0, sec.end - sec.start) * w, h);
+    ctx.fillStyle = '#fff6ea';
+    ctx.fillRect(Math.round(sec.start * w), 0, 2, h);
+    ctx.fillRect(Math.max(0, Math.round(sec.end * w) - 1), 0, 2, h);
+  }
+  if (idx >= 0 && idx === playingIdx && (playBuf || scrubFrac != null || playPending)) {
+    let frac = 0;
+    if (scrubFrac != null) frac = scrubFrac;
+    else if (playBuf && playBuf.duration > 0) frac = currentPlaySec() / playBuf.duration;
+    frac = Math.min(1, Math.max(0, frac));
+    ctx.fillStyle = '#fff6ea';
+    ctx.fillRect(Math.max(0, Math.round(frac * w) - 1), 0, 2, h);
+  }
+}
+
+function sectionEventFrac(e) {
+  const rect = $('seWave').getBoundingClientRect();
+  return ListControls.scrubFraction(e.clientX - rect.left, rect.width);
+}
+
+function sectionEdgeAt(e) {
+  const sec = sectionEditPath && sectionByPath.get(sectionEditPath);
+  const rect = $('seWave').getBoundingClientRect();
+  if (!sec || rect.width <= 0) return null;
+  const x = e.clientX - rect.left;
+  if (Math.abs(x - sec.start * rect.width) <= 8) return 'start';
+  if (Math.abs(x - sec.end * rect.width) <= 8) return 'end';
+  return null;
+}
+
+function applySectionToPlaying() {
+  const idx = dataset ? dataset.paths.indexOf(sectionEditPath) : -1;
+  if (idx < 0 || playingIdx !== idx || !playBuf || playPending) return;
+  const frac = playBuf.duration ? currentPlaySec() / playBuf.duration : 0;
+  seekPlayback(frac);
+}
+
+let sectionRateAt = 0;
+let sectionRateTimer = 0;
+
+function bindSectionEditor() {
+  const canvas = $('seWave');
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!sectionEditPath || e.button !== 0) return;
+    e.preventDefault();
+    const sec = ensureSection(sectionEditPath);
+    const edge = sectionEdgeAt(e);
+    sectionDrag = {
+      mode: edge || 'range',
+      anchor: edge === 'start' ? sec.end : sec.start,
+      origin: sectionEventFrac(e),
+      moved: false,
+      x: e.clientX,
+    };
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* already released */ }
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!sectionDrag || !sectionEditPath) {
+      const edge = sectionEdgeAt(e);
+      canvas.style.cursor = edge ? 'ew-resize' : 'crosshair';
+      return;
+    }
+    if (!sectionDrag.moved && Math.abs(e.clientX - sectionDrag.x) < 4) return;
+    sectionDrag.moved = true;
+    const frac = sectionEventFrac(e);
+    const sec = ensureSection(sectionEditPath);
+    const idx = dataset.paths.indexOf(sectionEditPath);
+    const min = SectionEditor.minSpanFraction(dataset.features.duration[idx]);
+    let next;
+    if (sectionDrag.mode === 'start') next = SectionEditor.sectionFromDrag(frac, sectionDrag.anchor, min);
+    else if (sectionDrag.mode === 'end') next = SectionEditor.sectionFromDrag(sectionDrag.anchor, frac, min);
+    else next = SectionEditor.sectionFromDrag(sectionDrag.origin, frac, min);
+    sec.start = next.start;
+    sec.end = next.end;
+    syncSectionEditor();
+  });
+  const endDrag = () => {
+    if (!sectionDrag) return;
+    const drag = sectionDrag;
+    sectionDrag = null;
+    if (!sectionEditPath) return;
+    if (!drag.moved) {
+      const idx = dataset.paths.indexOf(sectionEditPath);
+      if (idx >= 0) startPlayback(idx, drag.origin);
+      return;
+    }
+    applySectionToPlaying();
+    syncSectionEditor();
+    if (params && params.view === 'list') renderListWindow();
+  };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  $('seClose').addEventListener('click', () => closeSectionEditor());
+  $('sePlay').addEventListener('click', () => {
+    const idx = dataset ? dataset.paths.indexOf(sectionEditPath) : -1;
+    if (idx < 0) return;
+    const sec = ensureSection(sectionEditPath);
+    startPlayback(idx, sec.start, 'section');
+  });
+  $('seLoop').addEventListener('change', () => {
+    if (!sectionEditPath) return;
+    ensureSection(sectionEditPath).loop = $('seLoop').checked;
+    applySectionToPlaying();
+    if (params && params.view === 'list') renderListWindow();
+  });
+  $('seRate').addEventListener('input', () => {
+    if (!sectionEditPath) return;
+    const sec = ensureSection(sectionEditPath);
+    sec.rate = SectionEditor.clampRate(parseInt($('seRate').value, 10) / 100);
+    $('seRateVal').textContent = SectionEditor.formatRate(sec.rate);
+    const now = performance.now();
+    const apply = () => {
+      sectionRateAt = performance.now();
+      applySectionToPlaying();
+      if (params && params.view === 'list') renderListWindow();
+    };
+    if (now - sectionRateAt < 40) {
+      if (!sectionRateTimer) sectionRateTimer = setTimeout(() => { sectionRateTimer = 0; apply(); }, 45);
+      return;
+    }
+    apply();
+  });
+  $('seReset').addEventListener('click', () => {
+    if (!sectionEditPath) return;
+    const sec = ensureSection(sectionEditPath);
+    sec.start = 0;
+    sec.end = 1;
+    sec.loop = false;
+    sec.rate = 1;
+    auditionMode = null;
+    applySectionToPlaying();
+    syncSectionEditor();
+    if (params && params.view === 'list') renderListWindow();
+  });
+  $('seSave').addEventListener('click', () => saveOpenSection('replace'));
+  $('seSaveAs').addEventListener('click', () => saveOpenSection('copy'));
+}
+
+async function saveOpenSection(mode) {
+  if (!dataset || !sectionEditPath || sectionSaving) return;
+  const path = sectionEditPath;
+  const idx = dataset.paths.indexOf(path);
+  if (idx < 0) return;
+  const sec = ensureSection(path);
+  if (!SectionEditor.isTrimFraction(sec.start, sec.end)) {
+    showNotice({ msg: 'Drag a shorter section before saving the cut.' });
+    return;
+  }
+  const name = dataset.names[idx];
+  let fileName = '';
+  if (mode === 'copy') {
+    const suggested = SectionEditor.cutFileName(name, dataset.names);
+    const chosen = await askName({
+      title: 'Save section as a new sample',
+      initial: suggested,
+      confirmLabel: 'Save',
+    });
+    if (chosen == null) return;
+    fileName = chosen.trim() || suggested;
+  } else {
+    const ok = await askName({
+      title: `Overwrite "${name}" with this section?`,
+      confirmLabel: 'Replace',
+      hideInput: true,
+    });
+    if (ok == null) return;
+  }
+  const previous = { start: sec.start, end: sec.end, loop: sec.loop, rate: sec.rate };
+  sectionSaving = true;
+  try {
+    const buf = await loadAudioBuffer(idx);
+    if (!SectionEditor.isTrim(sec.start, sec.end, buf.length)) {
+      showNotice({ msg: 'Drag a shorter section before saving the cut.' });
+      return;
+    }
+    const range = SectionEditor.frameRange(sec.start, sec.end, buf.length);
+    const channels = [];
+    for (let c = 0; c < buf.numberOfChannels; c++) {
+      channels.push(buf.getChannelData(c).slice(range.startFrame, range.endFrame));
+    }
+    if (playingIdx === idx) stopAudio();
+    if (mode === 'replace') {
+      sec.start = 0;
+      sec.end = 1;
+    }
+    const result = await api.saveSection({
+      path,
+      mode,
+      fileName,
+      sampleRate: buf.sampleRate,
+      channels,
+    });
+    // A copy stays beside the original. A replace only moves the editor when the
+    // file itself had to change extension (an mp3 cannot keep a wav payload).
+    if (mode === 'replace' && result && result.path && result.path !== path) {
+      sectionByPath.delete(path);
+      sectionByPath.set(result.path, sec);
+      if (sectionEditPath === path) sectionEditPath = result.path;
+    }
+    const label = (result && result.name) || name;
+    const extra = result && result.warning ? ` Analysis warning: ${result.warning}` : '';
+    showNotice({
+      msg: mode === 'copy'
+        ? `Saved "${label}". The original file is unchanged.${extra}`
+        : `Replaced "${label}" with the cut.${extra}`,
+    });
+    syncSectionChrome();
+    if (params && params.view === 'list') renderListWindow();
+  } catch (e) {
+    sec.start = previous.start;
+    sec.end = previous.end;
+    sec.loop = previous.loop;
+    sec.rate = previous.rate;
+    showNotice({ msg: `Couldn't save the section: ${e.message}` });
+    syncSectionChrome();
+  } finally {
+    sectionSaving = false;
+  }
+}
 
 function playPlaylist(pl) {
   if (!dataset || !pl.paths.length) return;

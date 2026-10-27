@@ -152,6 +152,8 @@ button {
   font: inherit;
 }
 button:hover { border-color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+button:disabled:hover { border-color: var(--panel-edge); }
 button.primary { background: #2a1c0e; border-color: #5a3a14; }
 button.wide { width: 100%; margin-top: 10px; }
 .row { display: flex; gap: 8px; }
@@ -270,7 +272,7 @@ input[type="range"] {
   z-index: 4;
   display: flex;
   gap: 4px;
-  width: 246px;
+  width: 312px;
 }
 #viewBar .tab { background: rgba(18, 14, 11, 0.88); }
 #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; z-index: 1; }
@@ -333,7 +335,7 @@ input[type="range"] {
 }
 #listHead {
   display: grid;
-  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 26px 26px;
+  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 78px;
   gap: 8px;
   padding: 0 10px;
   height: 28px;
@@ -348,6 +350,20 @@ input[type="range"] {
 #listHead span { cursor: pointer; }
 #listHead span:hover { color: var(--text); }
 #listHead span.sort-active { color: var(--accent); }
+#listHead .list-shuffle {
+  justify-self: end;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--dim);
+  background: rgba(18, 14, 11, 0.88);
+}
+#listHead .list-shuffle:hover { color: var(--accent); border-color: var(--accent); }
 #listScroll {
   flex: 1;
   overflow-y: auto;
@@ -362,7 +378,7 @@ input[type="range"] {
 }
 .list-row {
   display: grid;
-  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 26px 26px;
+  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 78px;
   gap: 8px;
   padding: 0 10px;
   height: 36px;
@@ -461,7 +477,14 @@ input[type="range"] {
 #listHead span.no-sort { cursor: default; }
 
 /* Per-row tag editor: the pencil fades in on hover, stays lit while editing. */
-.list-edit-btn {
+.list-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+}
+.list-edit-btn,
+.list-section-btn {
   opacity: 0;
   transition: opacity 0.12s ease, color 0.12s ease;
   background: transparent;
@@ -477,9 +500,13 @@ input[type="range"] {
   justify-self: center;
 }
 .list-row:hover .list-edit-btn,
-.list-edit-btn:focus-visible { opacity: 1; }
-.list-edit-btn:hover { color: var(--accent); background: rgba(255, 193, 7, 0.12); }
-.list-row.editing .list-edit-btn { opacity: 1; color: var(--accent); }
+.list-row:hover .list-section-btn,
+.list-edit-btn:focus-visible,
+.list-section-btn:focus-visible { opacity: 1; }
+.list-edit-btn:hover,
+.list-section-btn:hover { color: var(--accent); background: rgba(255, 193, 7, 0.12); }
+.list-row.editing .list-edit-btn,
+.list-row.sectioning .list-section-btn { opacity: 1; color: var(--accent); }
 
 /* Heart/favorites toggle in the list row. Outline shows on hover; filled when favorited. */
 .list-fav-btn {
@@ -534,6 +561,98 @@ input[type="range"] {
 }
 .list-tags.edit .list-edit-instr,
 .list-tags.edit .list-edit-genre { flex: 1 1 0; min-width: 0; }
+
+/* ---------- section editor ---------- */
+#sectionEditor {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 48px;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(18, 12, 8, 0.96);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.se-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+#seTitle {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+#seTimes {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#seClose { margin-left: auto; padding: 2px 8px; flex-shrink: 0; }
+#seEmpty {
+  margin: auto;
+  color: var(--dim);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+#seWave {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 120px;
+  height: auto;
+  display: block;
+  cursor: crosshair;
+  border-radius: 4px;
+  background: #1a140e;
+}
+.se-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+#sectionEditor button { padding: 4px 8px; font-size: 12px; }
+.se-loop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  cursor: pointer;
+  color: var(--text);
+  white-space: nowrap;
+}
+.se-speed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 180px;
+  min-width: 160px;
+  margin: 0;
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.se-speed input { flex: 1; min-width: 70px; accent-color: var(--accent); cursor: pointer; }
+.se-speed span { color: var(--text); min-width: 40px; text-align: right; letter-spacing: 0; text-transform: none; }
 
 /* ---------- playlists ---------- */
 #playlistSection #newPlaylist { margin-bottom: 8px; margin-top: 0; }

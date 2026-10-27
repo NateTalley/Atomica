@@ -6,12 +6,17 @@ import zlib from 'node:zlib';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import '../renderer/list-controls.js';
+import '../renderer/section-editor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SMOKE = process.argv.includes('--smoke');
 const LIST_SELF_TEST = process.argv.includes('--list-self-test');
+const SECTION_SELF_TEST = process.argv.includes('--section-self-test');
+const SECTION_DEMO = process.argv.includes('--section-demo');
 if (LIST_SELF_TEST) {
   app.setPath('userData', path.join(os.tmpdir(), 'atomica-list-self-test'));
+} else if (SECTION_SELF_TEST || SECTION_DEMO) {
+  app.setPath('userData', path.join(os.tmpdir(), 'atomica-section-self-test'));
 }
 const AUDIO_EXT = new Set(['.wav', '.wave', '.mp3', '.flac', '.ogg', '.oga']);
 const SCALARS = ['brightness', 'pitch', 'loudness', 'duration', 'attack', 'noisiness', 'flux', 'rolloff'];
@@ -945,6 +950,106 @@ function registerIpc() {
     sendDataset();
     return true;
   });
+
+  ipcMain.handle('sample:saveSection', (_e, req) => saveSampleSection(req));
+}
+
+// Write the selected PCM back as 16-bit WAV. Copy keeps the source file; replace overwrites it.
+async function saveSampleSection(req) {
+  const sourcePath = req && req.path;
+  const entry = sourcePath ? library.get(sourcePath) : null;
+  if (!entry) throw new Error('unknown sample');
+  if (scanning) throw new Error('library is scanning');
+  const mode = req.mode === 'replace' ? 'replace' : 'copy';
+  if (!Array.isArray(req.channels) || !req.channels.length) throw new Error('empty section');
+  const frames = req.channels.reduce((m, ch) => Math.min(m, (ch && ch.length) || 0), Infinity);
+  if (!frames) throw new Error('empty section');
+  if (frames > 192000 * 60 * 10) throw new Error('section is too long to save');
+
+  const dir = path.dirname(sourcePath);
+  let names = [];
+  try { names = await fs.readdir(dir); } catch { throw new Error('sample folder is not writable'); }
+  const base = path.basename(sourcePath);
+  const ext = path.extname(sourcePath).toLowerCase();
+  let fileName;
+  if (mode === 'replace' && (ext === '.wav' || ext === '.wave')) fileName = base;
+  else if (mode === 'replace') fileName = SectionEditor.uniqueFileName(SectionEditor.wavFileName(base), names);
+  else fileName = SectionEditor.uniqueFileName(req.fileName || SectionEditor.cutFileName(base, names), names);
+  const dest = path.join(dir, fileName);
+  if (path.resolve(path.dirname(dest)) !== path.resolve(dir)) throw new Error('refusing to write outside the sample folder');
+  if (mode === 'copy' && path.resolve(dest) === path.resolve(sourcePath)) throw new Error('refusing to overwrite the original');
+
+  const wav = SectionEditor.encodeWav(req.channels, req.sampleRate);
+  await fs.writeFile(dest, wav);
+
+  let analyzed;
+  let warning = '';
+  try {
+    const { analyzeFile } = await import('./analysis/dsp.js');
+    analyzed = await analyzeFile(dest, false);
+  } catch (err) {
+    const mono = SectionEditor.mixDown(req.channels);
+    const sr = Math.round(Number(req.sampleRate)) || 44100;
+    analyzed = {
+      features: { ...(entry.f || {}), duration: mono.length / sr },
+      mfcc: entry.mfcc ? entry.mfcc.slice() : new Array(13).fill(0),
+      peaks: SectionEditor.peakEnvelope(mono),
+    };
+    warning = (err && err.message) || String(err);
+  }
+
+  const st = await fs.stat(dest);
+  let playlistsChanged = false;
+  if (mode === 'replace') {
+    if (dest !== sourcePath) {
+      library.delete(sourcePath);
+      for (const pl of state.playlists) {
+        let hit = false;
+        pl.paths = pl.paths.map((p) => {
+          if (p !== sourcePath) return p;
+          hit = true;
+          return dest;
+        });
+        if (hit) playlistsChanged = true;
+      }
+      try { await fs.unlink(sourcePath); }
+      catch (err) { warning = warning || `Saved ${fileName}, but the old file is still on disk (${err.message})`; }
+    }
+    entry.p = dest;
+    entry.mt = st.mtimeMs;
+    entry.sz = st.size;
+    entry.f = analyzed.features;
+    entry.mfcc = analyzed.mfcc;
+    entry.emb = null;
+    entry.peaks = analyzed.peaks;
+    library.set(dest, entry);
+  } else {
+    library.set(dest, {
+      p: dest,
+      mt: st.mtimeMs,
+      sz: st.size,
+      f: analyzed.features,
+      mfcc: analyzed.mfcc,
+      emb: null,
+      peaks: analyzed.peaks,
+      override: entry.override ? { ...entry.override } : null,
+    });
+  }
+
+  await saveCache();
+  if (playlistsChanged) await saveSettings();
+  sendDataset();
+  if (!SECTION_SELF_TEST && !LIST_SELF_TEST && state.params.mode === 'similarity') {
+    try { computeLayout(state.params); } catch (err) { console.error('layout after section save:', err); }
+  }
+  return {
+    path: dest,
+    name: path.basename(dest),
+    previousPath: sourcePath,
+    mode,
+    duration: analyzed.features && analyzed.features.duration,
+    warning,
+  };
 }
 
 function applyTagPatch(entry, patch) {
@@ -996,9 +1101,7 @@ function writeToneWav(filePath) {
   return fs.writeFile(filePath, Buffer.concat([header, data]));
 }
 
-async function seedListSelfTest() {
-  library.clear();
-  const dir = path.join(os.tmpdir(), 'atomica-list-fixtures');
+async function installFixtureLibrary(dir) {
   await fs.mkdir(dir, { recursive: true });
   const specs = [
     ['a_alpha.wav', 'oneshot', 100],
@@ -1030,6 +1133,18 @@ async function seedListSelfTest() {
   }
 }
 
+async function seedListSelfTest() {
+  library.clear();
+  await installFixtureLibrary(path.join(os.tmpdir(), 'atomica-list-fixtures'));
+}
+
+async function seedSectionSelfTest() {
+  library.clear();
+  const dir = path.join(os.tmpdir(), 'atomica-section-fixtures');
+  await fs.rm(dir, { recursive: true, force: true });
+  await installFixtureLibrary(dir);
+}
+
 async function runListSelfTest() {
   const shotDir = '/opt/cursor/artifacts';
   const shot = async (name) => {
@@ -1053,6 +1168,33 @@ async function runListSelfTest() {
   } catch (e) {
     console.error('LIST_UI FAIL', e);
     await shot('list-controls-fail.png');
+    app.exit(1);
+  }
+}
+
+async function runSectionSelfTest() {
+  const shotDir = '/opt/cursor/artifacts';
+  const shot = async (name) => {
+    try {
+      const img = await win.webContents.capturePage();
+      await fs.mkdir(shotDir, { recursive: true });
+      await fs.writeFile(path.join(shotDir, name), img.toPNG());
+    } catch (e) { console.error('capture failed:', e); }
+  };
+  try {
+    const driver = await fs.readFile(path.join(__dirname, '../../test/section-ui-driver.js'), 'utf8');
+    const result = await Promise.race([
+      win.webContents.executeJavaScript(driver, true),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('section ui driver timed out')), 45000)),
+    ]);
+    console.log('SECTION_UI', JSON.stringify(result));
+    if (!result || !result.ok) throw new Error('section ui driver failed');
+    await shot('section-editor.png');
+    console.log('SECTION_UI OK');
+    app.exit(0);
+  } catch (e) {
+    console.error('SECTION_UI FAIL', e);
+    await shot('section-editor-fail.png');
     app.exit(1);
   }
 }
@@ -1082,7 +1224,7 @@ async function createWindow() {
     },
   });
   Menu.setApplicationMenu(null);
-  if (SMOKE || LIST_SELF_TEST) {
+  if (SMOKE || LIST_SELF_TEST || SECTION_SELF_TEST) {
     win.webContents.on('console-message', (_e, level, message) => {
       console.log(`[renderer:${level}] ${message}`);
     });
@@ -1095,14 +1237,17 @@ app.whenReady().then(async () => {
   if (ensureFavoritesPlaylist()) await saveSettings();
   await loadCache();
   if (LIST_SELF_TEST) await seedListSelfTest();
+  if (SECTION_SELF_TEST || SECTION_DEMO) await seedSectionSelfTest();
   registerIpc();
   await createWindow();
   if (library.size) {
     // push cached data to renderer once it asks (request-dataset) — nothing to do here
   }
-  if (state.folders.length && !LIST_SELF_TEST) rescan();
+  if (state.folders.length && !LIST_SELF_TEST && !SECTION_SELF_TEST && !SECTION_DEMO) rescan();
   if (LIST_SELF_TEST) {
     setTimeout(() => { runListSelfTest(); }, 700);
+  } else if (SECTION_SELF_TEST) {
+    setTimeout(() => { runSectionSelfTest(); }, 700);
   } else if (SMOKE) {
     setTimeout(async () => {
       try {

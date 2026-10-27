@@ -152,6 +152,21 @@
   if (playingIdx !== c || !currentSource) throw new Error('scrub stopped playback');
   log.push('waveform drag seeks the playhead');
 
+  const shuffle = document.getElementById('viewShuffle');
+  const head = document.getElementById('listHead');
+  const bar = document.getElementById('viewBar');
+  if (!head.contains(shuffle)) throw new Error('shuffle is not on the list headers');
+  if (bar.contains(shuffle)) throw new Error('shuffle is still in the view bar');
+  if (!bar.querySelector('#viewEditor')) throw new Error('editor tab missing from the view bar');
+  const nameSort = head.querySelector('[data-sort="name"]');
+  if (!nameSort.classList.contains('sort-active')) throw new Error('name column should start sorted');
+  shuffle.click();
+  if (head.querySelector('span.sort-active')) throw new Error('shuffle left a column sort highlighted');
+  nameSort.click();
+  nameSort.click();
+  if (!nameSort.classList.contains('sort-active')) throw new Error('name sort did not return');
+  log.push('shuffle lives on the list headers and clears the column sort');
+
   // Leave a readable picture: two checks, a lowered slider, a mid-file playhead.
   rowFor('a_alpha.wav').querySelector('.list-check')
     .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
