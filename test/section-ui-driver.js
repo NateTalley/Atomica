@@ -68,8 +68,17 @@
   await waitFor(() => playingIdx < 0 && !currentSource);
   log.push('samples without a section still play once at full speed');
 
-  rowFor('c_gamma.wav').querySelector('.list-section-btn').click();
+  rowFor('c_gamma.wav').querySelector('.list-check')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  const editorTab = document.getElementById('viewEditor');
+  const shuffle = document.getElementById('viewShuffle');
+  if (!document.getElementById('viewBar').contains(editorTab)) throw new Error('editor tab is not in the view bar');
+  if (!document.getElementById('listHead').contains(shuffle)) throw new Error('shuffle left the list header');
+  if (document.getElementById('viewBar').contains(shuffle)) throw new Error('shuffle is still in the view bar');
+  editorTab.click();
   await waitFor(() => !document.getElementById('sectionEditor').hidden
+    && editorTab.classList.contains('active')
+    && !document.getElementById('seWave').hidden
     && document.getElementById('seWave').getBoundingClientRect().width > 80);
   if (document.getElementById('seTitle').textContent !== 'c_gamma.wav') {
     throw new Error('editor title ' + document.getElementById('seTitle').textContent);
@@ -120,6 +129,8 @@
   if (cutBytes.byteLength >= originalBytes) throw new Error('cut was not shorter');
   log.push('save as new writes the section and keeps the original file');
 
+  document.getElementById('viewList').click();
+  await waitFor(() => rowFor(cutName), 8000, 'cut row');
   const cutRow = rowFor(cutName);
   const rowDump = [...document.querySelectorAll('#listRows .list-row')]
     .map((r) => `${r.dataset.idx}:${r.querySelector('.list-name').textContent}`).join(' | ');
@@ -129,8 +140,9 @@
     const ed = document.getElementById('sectionEditor');
     const title = document.getElementById('seTitle').textContent;
     const width = document.getElementById('seWave').getBoundingClientRect().width;
-    if (!ed.hidden && title === cutName && width > 80) return true;
-    throw new Error(`row=${cutRow.querySelector('.list-name').textContent}#${cutRow.dataset.idx} title=${title} hidden=${ed.hidden} w=${Math.round(width)} rows=${rowDump}`);
+    const onEditor = document.getElementById('viewEditor').classList.contains('active');
+    if (!ed.hidden && onEditor && title === cutName && width > 80) return true;
+    throw new Error(`row=${cutRow.querySelector('.list-name').textContent}#${cutRow.dataset.idx} title=${title} hidden=${ed.hidden} editor=${onEditor} w=${Math.round(width)} rows=${rowDump}`);
   }, 2500, 'open-cut');
   dragSection(0, 0.5);
   const cutPath = dataset.paths[dataset.names.indexOf(cutName)];

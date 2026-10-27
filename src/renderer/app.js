@@ -89,12 +89,12 @@ async function init() {
   api.onProgress(showProgress);
   api.onNotice(showNotice);
 
-  // Escape closes an open row editor first; only stops playback when none is open.
+  // Escape leaves the editor or an open row editor before it stops playback.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!$('nameDialog').hidden) return;
     if (editingIdx >= 0) closeRowEditor();
-    else if (sectionEditPath) closeSectionEditor();
+    else if (params && params.view === 'editor') setView('list');
     else stopAudio();
   });
 
@@ -133,11 +133,12 @@ function applyDataset(ds, computeIfNeeded) {
   rebuildPlaylistPathSets();
   renderTagFilters();
   $('empty').hidden = ds.n > 0;
-  syncSectionChrome();
   starmap.setData(ds.n);
   restyle();
   updateStatus();
   refreshList(true);
+  if (params && params.view === 'editor') ensureEditorSample();
+  syncSectionChrome();
   if (!ds.n) return;
   if (params.mode === 'axes') {
     starmap.setPositions(axesPositions(), false);
@@ -229,7 +230,9 @@ function buildControls() {
 
   $('viewMap').addEventListener('click', () => setView('map'));
   $('viewList').addEventListener('click', () => setView('list'));
-  $('viewShuffle').addEventListener('click', () => {
+  $('viewEditor').addEventListener('click', () => setView('editor'));
+  $('viewShuffle').addEventListener('click', (e) => {
+    e.stopPropagation();
     listShuffled = true;
     for (const el of $('listHead').querySelectorAll('span')) el.classList.remove('sort-active');
     refreshList(true);
@@ -278,10 +281,11 @@ function syncControls() {
 }
 
 function setView(view, initial = false) {
-  params.view = view === 'list' ? 'list' : 'map';
+  params.view = view === 'list' || view === 'editor' ? view : 'map';
+  if (params.view === 'editor') ensureEditorSample();
   $('viewMap').classList.toggle('active', params.view === 'map');
   $('viewList').classList.toggle('active', params.view === 'list');
-  $('viewShuffle').hidden = params.view !== 'list';
+  $('viewEditor').classList.toggle('active', params.view === 'editor');
   if (params.view !== 'list') closeRowEditor(false);
   $('map').hidden = params.view !== 'map';
   $('listWrap').hidden = params.view !== 'list';
@@ -290,16 +294,20 @@ function setView(view, initial = false) {
   if (params.view === 'map') {
     starmap.dirty = true;
     starmap.fit();
-  } else {
+  } else if (params.view === 'list') {
     refreshList(true);
   }
   syncSectionChrome();
 }
 
 function updateStatusHints() {
-  $('statusRight').innerHTML = params.view === 'list'
-    ? 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;double-click type&nbsp;=&nbsp;loop / one-shot&nbsp;&nbsp;·&nbsp;&nbsp;drag waveform&nbsp;=&nbsp;scrub&nbsp;&nbsp;·&nbsp;&nbsp;scissors&nbsp;=&nbsp;section&nbsp;&nbsp;·&nbsp;&nbsp;drag row&nbsp;=&nbsp;drop into DAW'
-    : 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;drag star&nbsp;=&nbsp;drop into DAW&nbsp;&nbsp;·&nbsp;&nbsp;right-click&nbsp;=&nbsp;show in Explorer&nbsp;&nbsp;·&nbsp;&nbsp;wheel&nbsp;=&nbsp;zoom';
+  if (params.view === 'list') {
+    $('statusRight').innerHTML = 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;double-click type&nbsp;=&nbsp;loop / one-shot&nbsp;&nbsp;·&nbsp;&nbsp;drag waveform&nbsp;=&nbsp;scrub&nbsp;&nbsp;·&nbsp;&nbsp;scissors&nbsp;=&nbsp;editor&nbsp;&nbsp;·&nbsp;&nbsp;drag row&nbsp;=&nbsp;drop into DAW';
+  } else if (params.view === 'editor') {
+    $('statusRight').innerHTML = 'drag waveform&nbsp;=&nbsp;region&nbsp;&nbsp;·&nbsp;&nbsp;loop section&nbsp;=&nbsp;repeat it&nbsp;&nbsp;·&nbsp;&nbsp;speed&nbsp;=&nbsp;whole sample&nbsp;&nbsp;·&nbsp;&nbsp;save as new&nbsp;=&nbsp;keep the original';
+  } else {
+    $('statusRight').innerHTML = 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;drag star&nbsp;=&nbsp;drop into DAW&nbsp;&nbsp;·&nbsp;&nbsp;right-click&nbsp;=&nbsp;show in Explorer&nbsp;&nbsp;·&nbsp;&nbsp;wheel&nbsp;=&nbsp;zoom';
+  }
 }
 
 function setMode(mode, initial = false) {
@@ -1054,7 +1062,7 @@ function bindListPointer() {
       e.stopPropagation();
       const row = secBtn.closest('.list-row');
       if (!row) return;
-      toggleSectionEditor(parseInt(row.dataset.idx, 10));
+      openSectionEditor(parseInt(row.dataset.idx, 10));
       return;
     }
     const btn = e.target.closest('.list-edit-btn');
@@ -1281,7 +1289,7 @@ function currentPlaySec() {
 }
 
 function paintPlayingWave() {
-  if (sectionEditPath && params && params.view === 'list') drawSectionWave();
+  if (sectionEditPath && params && params.view === 'editor') drawSectionWave();
   if (!params || params.view !== 'list' || !$('listRows')) return;
   for (const row of $('listRows').children) {
     if (parseInt(row.dataset.idx, 10) === playingIdx) {
@@ -1954,40 +1962,62 @@ function ensureSection(path) {
   return sec;
 }
 
+function ensureEditorSample() {
+  if (!dataset || !dataset.n || !dataset.paths) return;
+  const have = new Set(dataset.paths);
+  if (sectionEditPath && have.has(sectionEditPath)) {
+    ensureSection(sectionEditPath);
+    return;
+  }
+  let path = null;
+  if (selectAnchor && selectedPaths.has(selectAnchor) && have.has(selectAnchor)) path = selectAnchor;
+  const order = listFiltered.length && listFiltered.every((i) => i >= 0 && i < dataset.n)
+    ? listFiltered
+    : [...Array(dataset.n).keys()];
+  if (!path) {
+    for (const i of order) {
+      const candidate = dataset.paths[i];
+      if (selectedPaths.has(candidate)) { path = candidate; break; }
+    }
+  }
+  if (!path && playingIdx >= 0 && playingIdx < dataset.n) path = dataset.paths[playingIdx];
+  if (!path) path = dataset.paths[order[0]];
+  if (!path || !have.has(path)) return;
+  sectionEditPath = path;
+  ensureSection(path);
+}
+
 function openSectionEditor(idx) {
   if (!dataset || !Number.isFinite(idx) || idx < 0 || idx >= dataset.n) return;
   sectionEditPath = dataset.paths[idx];
   ensureSection(sectionEditPath);
-  if (!params || params.view !== 'list') setView('list');
-  else {
-    syncSectionChrome();
-    renderListWindow();
-  }
+  if (!params || params.view !== 'editor') setView('editor');
+  else syncSectionChrome();
 }
 
 function closeSectionEditor() {
-  sectionEditPath = null;
   sectionDrag = null;
-  syncSectionChrome();
-  if (params && params.view === 'list') renderListWindow();
-}
-
-function toggleSectionEditor(idx) {
-  if (!dataset || !Number.isFinite(idx) || idx < 0) return;
-  const path = dataset.paths[idx];
-  if (sectionEditPath === path) closeSectionEditor();
-  else openSectionEditor(idx);
+  if (params && params.view === 'editor') setView('list');
 }
 
 function syncSectionChrome() {
   const editor = $('sectionEditor');
-  const wrap = $('mapWrap');
-  if (!editor || !wrap) return;
-  const open = !!(sectionEditPath && params && params.view === 'list' && dataset
-    && dataset.paths && dataset.paths.includes(sectionEditPath));
-  editor.hidden = !open;
-  wrap.classList.toggle('section-open', open);
-  if (open) syncSectionEditor();
+  if (!editor) return;
+  const onEditor = !!(params && params.view === 'editor');
+  const haveSample = !!(onEditor && sectionEditPath && dataset && dataset.paths
+    && dataset.paths.includes(sectionEditPath));
+  editor.hidden = !onEditor;
+  const empty = $('seEmpty');
+  if (empty) empty.hidden = !onEditor || haveSample;
+  const wave = $('seWave');
+  const controls = editor.querySelector('.se-controls');
+  if (wave) wave.hidden = !haveSample;
+  if (controls) controls.hidden = !haveSample;
+  if (haveSample) syncSectionEditor();
+  else if (onEditor) {
+    $('seTitle').textContent = 'Editor';
+    $('seTimes').textContent = '';
+  }
 }
 
 function syncSectionEditor() {

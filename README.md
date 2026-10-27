@@ -89,7 +89,9 @@ Type and tag cells become dropdowns you can correct by hand. Corrections are
 saved per file and survive rescans — the model won't overwrite them.
 
 In the list, each row also has a checkbox, a volume slider, and a scrubbable
-waveform:
+waveform. The view bar above the chart is **Map**, **List**, and **Editor**.
+The ⚄ button at the right of the list column headers shuffles that list until
+you sort a column again.
 
 | Action | Result |
 | --- | --- |
@@ -97,7 +99,7 @@ waveform:
 | Volume slider | Sets that sample's level (0–100%), multiplied by the master volume. 100% is the default. Checked samples share the level you set. |
 | Drag the waveform | Moves the playhead. Clicking the waveform seeks; clicking the rest of the row still plays and stops. |
 | Checkbox | Selects samples. Shift-click selects a range, and the header checkbox selects everything currently shown. Add to playlist, remove, and tag edits then apply to the whole selection. |
-| ✂ Section | Opens the section editor for that sample. Drag the large waveform to choose a region. **Loop section** repeats just that region. **Speed** slows or speeds the sample's audition (one rate for the whole source, so pitch moves with it). **Save as new** writes a new WAV beside the original and leaves that file alone. **Replace original…** overwrites the file with the region only after you confirm. |
+| **Editor** tab | Opens the section editor. It keeps the sample already open; otherwise it uses a checked row (the last one you checked), the sample that is playing, or the first row. ✂ on a list row opens the Editor tab for that sample. Drag the waveform to choose a region. **Loop section** repeats just that region. **Speed** slows or speeds the sample's audition (one rate for the whole source, so pitch moves with it). **Save as new** writes a new WAV beside the original and leaves that file alone. **Replace original…** overwrites the file with the region only after you confirm. |
 
 ## Performance
 

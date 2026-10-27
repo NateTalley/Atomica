@@ -272,7 +272,7 @@ input[type="range"] {
   z-index: 4;
   display: flex;
   gap: 4px;
-  width: 246px;
+  width: 312px;
 }
 #viewBar .tab { background: rgba(18, 14, 11, 0.88); }
 #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; z-index: 1; }
@@ -350,6 +350,20 @@ input[type="range"] {
 #listHead span { cursor: pointer; }
 #listHead span:hover { color: var(--text); }
 #listHead span.sort-active { color: var(--accent); }
+#listHead .list-shuffle {
+  justify-self: end;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--dim);
+  background: rgba(18, 14, 11, 0.88);
+}
+#listHead .list-shuffle:hover { color: var(--accent); border-color: var(--accent); }
 #listScroll {
   flex: 1;
   overflow-y: auto;
@@ -521,18 +535,17 @@ input[type="range"] {
 .list-tags.edit .list-edit-genre { flex: 1 1 0; min-width: 0; }
 
 /* ---------- section editor ---------- */
-#mapWrap.section-open #listWrap { bottom: 216px; }
 #sectionEditor {
   position: absolute;
   left: 12px;
   right: 12px;
+  top: 48px;
   bottom: 12px;
-  z-index: 5;
-  height: 196px;
+  z-index: 3;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 10px 12px;
   background: rgba(18, 12, 8, 0.96);
   border: 1px solid var(--panel-edge);
   border-radius: 8px;
@@ -543,6 +556,7 @@ input[type="range"] {
   align-items: baseline;
   gap: 10px;
   min-width: 0;
+  flex-shrink: 0;
 }
 #seTitle {
   font-size: 13px;
@@ -561,10 +575,19 @@ input[type="range"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#seClose { margin-left: auto; padding: 2px 8px; }
+#seClose { margin-left: auto; padding: 2px 8px; flex-shrink: 0; }
+#seEmpty {
+  margin: auto;
+  color: var(--dim);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
 #seWave {
   width: 100%;
-  height: 84px;
+  flex: 1 1 auto;
+  min-height: 120px;
+  height: auto;
   display: block;
   cursor: crosshair;
   border-radius: 4px;
@@ -575,6 +598,7 @@ input[type="range"] {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 #sectionEditor button { padding: 4px 8px; font-size: 12px; }
 .se-loop {

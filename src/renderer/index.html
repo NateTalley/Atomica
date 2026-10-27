@@ -124,7 +124,7 @@
     <div id="viewBar">
       <button id="viewMap" class="tab active">Map</button>
       <button id="viewList" class="tab">List</button>
-      <button id="viewShuffle" class="tab" type="button" title="Shuffle order (click a column header to re-sort)" hidden>⚄</button>
+      <button id="viewEditor" class="tab">Editor</button>
     </div>
     <canvas id="map"></canvas>
     <div id="listWrap" hidden>
@@ -137,7 +137,7 @@
         <span data-sort="kind">Type</span>
         <span data-sort="bpm">BPM</span>
         <span data-sort="tags">Tags</span>
-        <span class="no-sort"></span>
+        <button id="viewShuffle" type="button" class="list-shuffle" title="Shuffle order (click a column header to re-sort)">⚄</button>
       </div>
       <div id="listScroll">
         <div id="listSpacer"></div>
@@ -155,8 +155,9 @@
       <div class="se-head">
         <span id="seTitle"></span>
         <span id="seTimes"></span>
-        <button id="seClose" type="button" title="Close the section editor">✕</button>
+        <button id="seClose" type="button" title="Back to the list">✕</button>
       </div>
+      <p id="seEmpty" hidden>Check a sample in the list, or click ✂ on a row.</p>
       <canvas id="seWave" draggable="false"></canvas>
       <div class="se-controls">
         <button id="sePlay" type="button">Play section</button>
