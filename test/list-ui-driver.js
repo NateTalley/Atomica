@@ -111,6 +111,41 @@
   });
   log.push('add to playlist takes the checked samples');
 
+  // Heart on a checked favorite removes every checked sample.
+  rowFor('a_alpha.wav').querySelector('.list-fav-btn').click();
+  await waitFor(() => {
+    const pl = playlists.find((p) => String(p.name).toLowerCase() === 'favorites');
+    return pl
+      && !pl.paths.includes(dataset.paths[a])
+      && !pl.paths.includes(dataset.paths[b])
+      && !pl.paths.includes(dataset.paths[c]);
+  });
+  log.push('heart on a checked sample removes every checked sample');
+
+  // Heart on an unchecked row changes only that row.
+  rowFor('c_gamma.wav').querySelector('.list-fav-btn').click();
+  await waitFor(() => {
+    const pl = playlists.find((p) => String(p.name).toLowerCase() === 'favorites');
+    return pl
+      && pl.paths.includes(dataset.paths[c])
+      && !pl.paths.includes(dataset.paths[a])
+      && !pl.paths.includes(dataset.paths[b]);
+  });
+  log.push('heart on an unchecked sample changes only that sample');
+
+  // Heart on a checked row that is not a favorite adds every checked sample.
+  rowFor('a_alpha.wav').querySelector('.list-fav-btn').click();
+  await waitFor(() => {
+    const pl = playlists.find((p) => String(p.name).toLowerCase() === 'favorites');
+    const title = rowFor('a_alpha.wav')?.querySelector('.list-fav-btn')?.title;
+    return pl
+      && pl.paths.includes(dataset.paths[a])
+      && pl.paths.includes(dataset.paths[b])
+      && pl.paths.includes(dataset.paths[c])
+      && title === 'Remove 2 samples from favorites';
+  });
+  log.push('heart on a checked sample adds every checked sample');
+
   // 6. Header checkbox and shift-click range.
   document.getElementById('listSelectAll').click();
   await waitFor(() => selectedPaths.size === 4);

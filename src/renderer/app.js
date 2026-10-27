@@ -932,7 +932,10 @@ function paintListRow(row, idx) {
   const favSet = playlistPathSets.get('pl_favorites');
   const isFav = favSet && favSet.has(dataset.paths[idx]);
   favBtn.classList.toggle('active', !!isFav);
-  favBtn.title = isFav ? 'Remove from favorites' : 'Add to favorites';
+  const favCount = affectedPaths(idx).length;
+  favBtn.title = isFav
+    ? (favCount > 1 ? `Remove ${favCount} samples from favorites` : 'Remove from favorites')
+    : (favCount > 1 ? `Add ${favCount} samples to favorites` : 'Add to favorites');
   const dur = dataset.features.duration[idx];
   row.querySelector('.list-dur').textContent = dur != null ? formatDur(dur) : '—';
   const name = row.querySelector('.list-name');
@@ -1858,15 +1861,24 @@ function togglePlaylistFilter(id) {
 
 async function toggleFavorite(idx) {
   if (!dataset || idx < 0 || idx >= dataset.paths.length) return;
-  const path = dataset.paths[idx];
+  const paths = affectedPaths(idx);
+  if (!paths.length) return;
   const favSet = playlistPathSets.get('pl_favorites');
-  const isFav = favSet && favSet.has(path);
+  const isFav = favSet && favSet.has(dataset.paths[idx]);
   if (isFav) {
-    playlists = await api.playlistsRemove('pl_favorites', path);
-    showNotice({ msg: `Removed "${dataset.names[idx]}" from favorites` });
+    playlists = await api.playlistsRemove('pl_favorites', paths);
+    showNotice({
+      msg: paths.length > 1
+        ? `Removed ${paths.length} samples from favorites`
+        : `Removed "${dataset.names[idx]}" from favorites`,
+    });
   } else {
-    playlists = await api.playlistsAdd('pl_favorites', [path]);
-    showNotice({ msg: `Added "${dataset.names[idx]}" to favorites` });
+    playlists = await api.playlistsAdd('pl_favorites', paths);
+    showNotice({
+      msg: paths.length > 1
+        ? `Added ${paths.length} samples to favorites`
+        : `Added "${dataset.names[idx]}" to favorites`,
+    });
   }
   rebuildPlaylistPathSets();
   renderPlaylists();
