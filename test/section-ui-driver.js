@@ -136,8 +136,21 @@
   const cutPath = dataset.paths[dataset.names.indexOf(cutName)];
   const half = sectionByPath.get(cutPath);
   if (!half || half.end > 0.55) throw new Error('second selection ' + JSON.stringify(half));
-  document.getElementById('seSave').click();
+  const replaceBtn = document.getElementById('seSave');
+  const saveAsBtn = document.getElementById('seSaveAs');
+  if (replaceBtn.textContent !== 'Replace original…') throw new Error('replace label ' + replaceBtn.textContent);
+  if (replaceBtn.classList.contains('primary') || !saveAsBtn.classList.contains('primary')) {
+    throw new Error('save as new should be the primary button');
+  }
+  if (!(saveAsBtn.compareDocumentPosition(replaceBtn) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+    throw new Error('save as new should come before replace');
+  }
+  replaceBtn.click();
   await waitFor(() => !document.getElementById('nameDialog').hidden);
+  const confirmTitle = document.getElementById('nameDialogTitle').textContent;
+  if (!confirmTitle.startsWith('Overwrite "') || !confirmTitle.includes('with this section?')) {
+    throw new Error('confirm ' + confirmTitle);
+  }
   document.getElementById('nameDialogOk').click();
   await waitFor(() => {
     const i = dataset.names.indexOf(cutName);

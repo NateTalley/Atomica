@@ -97,7 +97,7 @@ waveform:
 | Volume slider | Sets that sample's level (0–100%), multiplied by the master volume. 100% is the default. Checked samples share the level you set. |
 | Drag the waveform | Moves the playhead. Clicking the waveform seeks; clicking the rest of the row still plays and stops. |
 | Checkbox | Selects samples. Shift-click selects a range, and the header checkbox selects everything currently shown. Add to playlist, remove, and tag edits then apply to the whole selection. |
-| ✂ Section | Opens the section editor for that sample. Drag the large waveform to choose a region. **Loop section** repeats just that region. **Speed** slows or speeds the sample's audition (one rate for the whole source, so pitch moves with it). **Save cut** overwrites the file with the region at its original speed. **Save as new** writes a new WAV beside it and leaves the original file alone. |
+| ✂ Section | Opens the section editor for that sample. Drag the large waveform to choose a region. **Loop section** repeats just that region. **Speed** slows or speeds the sample's audition (one rate for the whole source, so pitch moves with it). **Save as new** writes a new WAV beside the original and leaves that file alone. **Replace original…** overwrites the file with the region only after you confirm. |
 
 ## Performance
 
