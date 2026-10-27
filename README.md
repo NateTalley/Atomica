@@ -1,4 +1,4 @@
-# Sample Man
+# Atomica
 
 A star-map sample browser. Point it at your sample folders, and it charts every
 sample as a star on a 2D map where nearby stars sound alike — then lets you
@@ -156,7 +156,7 @@ src/renderer/
 ```
 
 Settings and the analysis cache live in Electron's userData directory
-(`%APPDATA%/sample-man` on Windows). Deleting `cache.json` forces a full reanalysis.
+(`%APPDATA%/atomica` on Windows). Deleting `cache.json` forces a full reanalysis.
 
 ## Notes
 

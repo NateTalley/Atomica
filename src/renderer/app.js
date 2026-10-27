@@ -489,9 +489,9 @@ function rebuildTagColors() {
   genreColors = dataset && dataset.genres ? hueMap(dataset.genres) : new Map();
 }
 
-// brand gradient: low = deep red-orange, high = bright orange
+// brand gradient: low = deep orange, high = pale yellow
 function stellarColor(t) {
-  const lo = [1.0, 0.20, 0.0], mid = [1.0, 0.45, 0.05], hi = [1.0, 0.70, 0.25];
+  const lo = [1.0, 0.35, 0.12], mid = [1.0, 0.76, 0.18], hi = [1.0, 0.95, 0.72];
   const mix = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
   return t < 0.5 ? mix(lo, mid, t * 2) : mix(mid, hi, (t - 0.5) * 2);
 }
@@ -1004,7 +1004,7 @@ function drawWaveform(canvas, idx) {
   ctx.fillRect(0, 0, w, h);
   const mid = h / 2;
   const peaks = dataset.peaks;
-  ctx.fillStyle = '#fc3b00';
+  ctx.fillStyle = '#ffc107';
   if (!peaks) {
     ctx.fillRect(0, mid - 1, w, 2);
     return;
@@ -1036,7 +1036,7 @@ function drawWaveform(canvas, idx) {
   const trackH = 6;
   ctx.fillStyle = 'rgba(243, 230, 212, 0.2)';
   ctx.fillRect(0, h - trackH, w, trackH);
-  ctx.fillStyle = '#fc3b00';
+  ctx.fillStyle = '#ffc107';
   ctx.fillRect(0, h - trackH, x, trackH);
   ctx.fillStyle = '#fff6ea';
   ctx.fillRect(Math.max(0, Math.round(x) - 1), 0, 2, h);
@@ -2061,7 +2061,7 @@ function drawSectionWave() {
   const idx = dataset ? dataset.paths.indexOf(sectionEditPath) : -1;
   const sec = sectionByPath.get(sectionEditPath);
   const mid = h / 2;
-  ctx.fillStyle = '#fc3b00';
+  ctx.fillStyle = '#ffc107';
   if (idx >= 0 && dataset.peaks) {
     const off = idx * PEAK_BINS;
     const barW = w / PEAK_BINS;
@@ -2079,7 +2079,7 @@ function drawSectionWave() {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
     ctx.fillRect(0, 0, sec.start * w, h);
     ctx.fillRect(sec.end * w, 0, Math.max(0, 1 - sec.end) * w, h);
-    ctx.fillStyle = 'rgba(252, 59, 0, 0.16)';
+    ctx.fillStyle = 'rgba(255, 193, 7, 0.16)';
     ctx.fillRect(sec.start * w, 0, Math.max(0, sec.end - sec.start) * w, h);
     ctx.fillStyle = '#fff6ea';
     ctx.fillRect(Math.round(sec.start * w), 0, 2, h);

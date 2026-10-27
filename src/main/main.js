@@ -14,9 +14,9 @@ const LIST_SELF_TEST = process.argv.includes('--list-self-test');
 const SECTION_SELF_TEST = process.argv.includes('--section-self-test');
 const SECTION_DEMO = process.argv.includes('--section-demo');
 if (LIST_SELF_TEST) {
-  app.setPath('userData', path.join(os.tmpdir(), 'sample-man-list-self-test'));
+  app.setPath('userData', path.join(os.tmpdir(), 'atomica-list-self-test'));
 } else if (SECTION_SELF_TEST || SECTION_DEMO) {
-  app.setPath('userData', path.join(os.tmpdir(), 'sample-man-section-self-test'));
+  app.setPath('userData', path.join(os.tmpdir(), 'atomica-section-self-test'));
 }
 const AUDIO_EXT = new Set(['.wav', '.wave', '.mp3', '.flac', '.ogg', '.oga']);
 const SCALARS = ['brightness', 'pitch', 'loudness', 'duration', 'attack', 'noisiness', 'flux', 'rolloff'];
@@ -1135,12 +1135,12 @@ async function installFixtureLibrary(dir) {
 
 async function seedListSelfTest() {
   library.clear();
-  await installFixtureLibrary(path.join(os.tmpdir(), 'sample-man-list-fixtures'));
+  await installFixtureLibrary(path.join(os.tmpdir(), 'atomica-list-fixtures'));
 }
 
 async function seedSectionSelfTest() {
   library.clear();
-  const dir = path.join(os.tmpdir(), 'sample-man-section-fixtures');
+  const dir = path.join(os.tmpdir(), 'atomica-section-fixtures');
   await fs.rm(dir, { recursive: true, force: true });
   await installFixtureLibrary(dir);
 }
@@ -1211,12 +1211,12 @@ async function createWindow() {
     minWidth: 980,
     minHeight: 620,
     backgroundColor: '#000000',
-    title: 'Sample Man',
+    title: 'Atomica',
     icon: path.join(__dirname, '..', 'renderer', 'logo.png'),
     titleBarStyle: 'hidden',
     ...(mac
       ? { trafficLightPosition: { x: 12, y: (TITLEBAR_H - 14) / 2 } }
-      : { titleBarOverlay: { color: '#0d0a07', symbolColor: '#fc3b00', height: TITLEBAR_H } }),
+      : { titleBarOverlay: { color: '#0d0a07', symbolColor: '#e6b45e', height: TITLEBAR_H } }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
