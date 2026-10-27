@@ -11,7 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SMOKE = process.argv.includes('--smoke');
 const LIST_SELF_TEST = process.argv.includes('--list-self-test');
 if (LIST_SELF_TEST) {
-  app.setPath('userData', path.join(os.tmpdir(), 'sample-man-list-self-test'));
+  app.setPath('userData', path.join(os.tmpdir(), 'atomica-list-self-test'));
 }
 const AUDIO_EXT = new Set(['.wav', '.wave', '.mp3', '.flac', '.ogg', '.oga']);
 const SCALARS = ['brightness', 'pitch', 'loudness', 'duration', 'attack', 'noisiness', 'flux', 'rolloff'];
@@ -998,7 +998,7 @@ function writeToneWav(filePath) {
 
 async function seedListSelfTest() {
   library.clear();
-  const dir = path.join(os.tmpdir(), 'sample-man-list-fixtures');
+  const dir = path.join(os.tmpdir(), 'atomica-list-fixtures');
   await fs.mkdir(dir, { recursive: true });
   const specs = [
     ['a_alpha.wav', 'oneshot', 100],
@@ -1069,12 +1069,12 @@ async function createWindow() {
     minWidth: 980,
     minHeight: 620,
     backgroundColor: '#000000',
-    title: 'Sample Man',
+    title: 'Atomica',
     icon: path.join(__dirname, '..', 'renderer', 'logo.png'),
     titleBarStyle: 'hidden',
     ...(mac
       ? { trafficLightPosition: { x: 12, y: (TITLEBAR_H - 14) / 2 } }
-      : { titleBarOverlay: { color: '#0d0a07', symbolColor: '#fc3b00', height: TITLEBAR_H } }),
+      : { titleBarOverlay: { color: '#0d0a07', symbolColor: '#e6b45e', height: TITLEBAR_H } }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
