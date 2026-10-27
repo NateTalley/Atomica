@@ -43,6 +43,7 @@ let playlistPlayPos = -1;
 let playlistPathSets = new Map(); // pl.id -> Set of paths, rebuilt when dataset or playlists change
 let editingIdx = -1;           // dataset index whose row has its tag editor open (-1 = none)
 let selectedPaths = new Set(); // checked list rows, keyed by sample path
+let libraryPaths = new Set(); // paths in the current dataset; reused by affectedPaths
 let selectAnchor = null;       // path of the last checkbox click, for shift-click range
 let pendingVolumes = new Map(); // path -> level while a volume save is in flight
 let sectionByPath = new Map(); // path -> { start, end, loop, rate } fractions and sample-wide playback rate
@@ -116,6 +117,7 @@ function applyDataset(ds, computeIfNeeded) {
   }
   if (ds && ds.paths) {
     const have = new Set(ds.paths);
+    libraryPaths = have;
     for (const p of [...selectedPaths]) if (!have.has(p)) selectedPaths.delete(p);
     if (selectAnchor && !have.has(selectAnchor)) selectAnchor = null;
     if (sectionEditPath && !have.has(sectionEditPath) && !sectionSaving) {
@@ -123,6 +125,8 @@ function applyDataset(ds, computeIfNeeded) {
       sectionEditPath = null;
     }
     for (const p of [...sectionByPath.keys()]) if (!have.has(p) && p !== sectionEditPath) sectionByPath.delete(p);
+  } else {
+    libraryPaths = new Set();
   }
   dataset = ds;
   if (dataset && dataset.peaks && !(dataset.peaks instanceof Uint8Array)) {
@@ -739,8 +743,7 @@ function onHeaderCheckClick(e) {
 
 function affectedPaths(idx) {
   if (!dataset || !Number.isFinite(idx) || idx < 0) return [];
-  const have = new Set(dataset.paths);
-  return ListControls.batchPaths(selectedPaths, dataset.paths[idx]).filter((p) => have.has(p));
+  return ListControls.batchPaths(selectedPaths, dataset.paths[idx]).filter((p) => libraryPaths.has(p));
 }
 
 function onCheckClick(box, shiftKey) {
@@ -932,7 +935,7 @@ function paintListRow(row, idx) {
   const favSet = playlistPathSets.get('pl_favorites');
   const isFav = favSet && favSet.has(dataset.paths[idx]);
   favBtn.classList.toggle('active', !!isFav);
-  const favCount = affectedPaths(idx).length;
+  const favCount = selectedPaths.has(path) ? selectedPaths.size : 1;
   favBtn.title = isFav
     ? (favCount > 1 ? `Remove ${favCount} samples from favorites` : 'Remove from favorites')
     : (favCount > 1 ? `Add ${favCount} samples to favorites` : 'Add to favorites');
