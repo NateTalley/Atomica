@@ -333,7 +333,7 @@ input[type="range"] {
 }
 #listHead {
   display: grid;
-  grid-template-columns: 132px 56px 1fr 64px 40px minmax(110px, 1.1fr) 26px;
+  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 26px;
   gap: 8px;
   padding: 0 10px;
   height: 28px;
@@ -362,7 +362,7 @@ input[type="range"] {
 }
 .list-row {
   display: grid;
-  grid-template-columns: 132px 56px 1fr 64px 40px minmax(110px, 1.1fr) 26px;
+  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 26px;
   gap: 8px;
   padding: 0 10px;
   height: 36px;
@@ -372,7 +372,25 @@ input[type="range"] {
 }
 .list-row:hover { background: rgba(252, 59, 0, 0.06); }
 .list-row.playing { background: rgba(255, 90, 31, 0.12); }
-.list-row canvas { width: 124px; height: 28px; display: block; }
+.list-row.selected { box-shadow: inset 3px 0 0 var(--accent); }
+.list-row.selected:not(.playing) { background: rgba(252, 59, 0, 0.07); }
+.list-head-check,
+.list-check {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  justify-self: center;
+}
+.list-vol {
+  width: 100%;
+  margin: 0;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.list-row canvas { width: 124px; height: 28px; display: block; cursor: ew-resize; }
 .list-dur {
   color: var(--dim);
   font-variant-numeric: tabular-nums;
@@ -390,6 +408,8 @@ input[type="range"] {
   font-variant-numeric: tabular-nums;
 }
 .list-kind.loop { color: var(--accent); }
+.list-kind.cyclable { cursor: pointer; }
+.list-row:hover .list-kind.cyclable { text-decoration: underline; text-underline-offset: 2px; }
 .list-tags {
   display: flex;
   gap: 4px;

@@ -7,7 +7,9 @@
   "type": "module",
   "scripts": {
     "start": "electron .",
-    "smoke": "electron . --smoke"
+    "smoke": "electron . --smoke",
+    "test": "node --test test/list-controls.test.mjs",
+    "test:list-ui": "electron . --list-self-test"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.3.0",

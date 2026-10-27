@@ -84,9 +84,19 @@ intelligence.
 ## Correcting classifications
 
 The one-shot/loop, instrument, and genre tags are the model's best guess and it
-will miss some. Switch the map to **List** view, click **Edit**, and each row's
+will miss some. Switch the map to **List** view, click the pencil, and each row's
 Type and tag cells become dropdowns you can correct by hand. Corrections are
 saved per file and survive rescans — the model won't overwrite them.
+
+In the list, each row also has a checkbox, a volume slider, and a scrubbable
+waveform:
+
+| Action | Result |
+| --- | --- |
+| Double-click **Loop** or **One-shot** | Cycles that sample between the two. Checked samples change together. |
+| Volume slider | Sets that sample's level (0–100%), multiplied by the master volume. 100% is the default. Checked samples share the level you set. |
+| Drag the waveform | Moves the playhead. Clicking the waveform seeks; clicking the rest of the row still plays and stops. |
+| Checkbox | Selects samples. Shift-click selects a range, and the header checkbox selects everything currently shown. Add to playlist, remove, and tag edits then apply to the whole selection. |
 
 ## Performance
 

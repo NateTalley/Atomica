@@ -5,9 +5,14 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
+import '../renderer/list-controls.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SMOKE = process.argv.includes('--smoke');
+const LIST_SELF_TEST = process.argv.includes('--list-self-test');
+if (LIST_SELF_TEST) {
+  app.setPath('userData', path.join(os.tmpdir(), 'sample-man-list-self-test'));
+}
 const AUDIO_EXT = new Set(['.wav', '.wave', '.mp3', '.flac', '.ogg', '.oga']);
 const SCALARS = ['brightness', 'pitch', 'loudness', 'duration', 'attack', 'noisiness', 'flux', 'rolloff'];
 const PEAK_BINS = 128;
@@ -623,6 +628,7 @@ function buildDataset() {
     genres: new Array(n),
     kinds: new Array(n),
     bpms: new Array(n),
+    volumes: new Array(n),
     peaks,
     features: Object.fromEntries(SCALARS.map((k) => [k, new Array(n)])),
   };
@@ -638,6 +644,8 @@ function buildDataset() {
     const kind = (e.override && e.override.kind) || (e.f && e.f.kind) || null;
     ds.kinds[i] = kind;
     ds.bpms[i] = kind === 'loop' ? (e.f && e.f.bpm != null ? e.f.bpm : null) : null;
+    const vol = e.override && typeof e.override.volume === 'number' ? e.override.volume : 1;
+    ds.volumes[i] = Math.min(1, Math.max(0, vol));
     for (const k of SCALARS) ds.features[k][i] = e.f[k] ?? null;
   }
   return ds;
@@ -893,9 +901,13 @@ function registerIpc() {
     return state.playlists;
   });
 
-  ipcMain.handle('playlists:remove', async (_e, id, path) => {
+  ipcMain.handle('playlists:remove', async (_e, id, pathOrPaths) => {
     const pl = state.playlists.find((p) => p.id === id);
-    if (pl) { pl.paths = pl.paths.filter((p) => p !== path); await saveSettings(); }
+    if (pl) {
+      const drop = new Set(Array.isArray(pathOrPaths) ? pathOrPaths : [pathOrPaths]);
+      pl.paths = pl.paths.filter((p) => !drop.has(p));
+      await saveSettings();
+    }
     return state.playlists;
   });
 
@@ -925,26 +937,124 @@ function registerIpc() {
   }));
 
   ipcMain.handle('sample:setTags', async (_e, samplePath, patch) => {
-    const entry = library.get(samplePath);
-    if (!entry) throw new Error('unknown sample');
-    const next = { ...(entry.override || {}) };
-    if (patch.kind !== undefined) {
-      if (patch.kind === null || patch.kind === '') delete next.kind;
-      else next.kind = patch.kind === 'loop' ? 'loop' : 'oneshot';
-    }
-    if (patch.instrument !== undefined) {
-      if (!patch.instrument || patch.instrument === '—') delete next.instrument;
-      else next.instrument = String(patch.instrument);
-    }
-    if (patch.genre !== undefined) {
-      if (!patch.genre || patch.genre === '—') delete next.genre;
-      else next.genre = String(patch.genre);
-    }
-    entry.override = Object.keys(next).length ? next : null;
+    const paths = Array.isArray(samplePath) ? samplePath : [samplePath];
+    const targets = paths.map((p) => library.get(p)).filter(Boolean);
+    if (!targets.length) throw new Error('unknown sample');
+    for (const entry of targets) applyTagPatch(entry, patch || {});
     await saveCache();
     sendDataset();
     return true;
   });
+}
+
+function applyTagPatch(entry, patch) {
+  const next = { ...(entry.override || {}) };
+  if (patch.kind !== undefined) {
+    if (patch.kind === null || patch.kind === '') delete next.kind;
+    else next.kind = patch.kind === 'loop' ? 'loop' : 'oneshot';
+  }
+  if (patch.instrument !== undefined) {
+    if (!patch.instrument || patch.instrument === '—') delete next.instrument;
+    else next.instrument = String(patch.instrument);
+  }
+  if (patch.genre !== undefined) {
+    if (!patch.genre || patch.genre === '—') delete next.genre;
+    else next.genre = String(patch.genre);
+  }
+  if (patch.volume !== undefined) {
+    const v = ListControls.volumeOverride(patch.volume);
+    if (v == null) delete next.volume;
+    else next.volume = v;
+  }
+  entry.override = Object.keys(next).length ? next : null;
+}
+
+// ------------------------------------------------------------ list self-test fixtures
+
+function writeToneWav(filePath) {
+  const sr = 44100;
+  const n = sr;
+  const data = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) {
+    const s = Math.sin((2 * Math.PI * 440 * i) / sr) * 0.2;
+    data.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(s * 32767))), i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sr, 24);
+  header.writeUInt32LE(sr * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(data.length, 40);
+  return fs.writeFile(filePath, Buffer.concat([header, data]));
+}
+
+async function seedListSelfTest() {
+  library.clear();
+  const dir = path.join(os.tmpdir(), 'sample-man-list-fixtures');
+  await fs.mkdir(dir, { recursive: true });
+  const specs = [
+    ['a_alpha.wav', 'oneshot', 100],
+    ['b_beta.wav', 'oneshot', 110],
+    ['c_gamma.wav', 'loop', 120],
+    ['d_delta.wav', 'loop', 130],
+  ];
+  for (const [name, kind, bpm] of specs) {
+    const filePath = path.join(dir, name);
+    await writeToneWav(filePath);
+    const peaks = new Uint8Array(PEAK_BINS);
+    for (let i = 0; i < PEAK_BINS; i++) peaks[i] = Math.round(180 * Math.abs(Math.sin(i / 5)) + 20);
+    library.set(filePath, {
+      p: filePath,
+      mt: 1,
+      sz: 1000,
+      f: {
+        duration: 1, loudness: -12, brightness: 0.4, noisiness: 0.2,
+        rolloff: 0.5, flux: 0.1, pitch: 60, attack: 0.02, kind, bpm,
+      },
+      mfcc: new Array(13).fill(0),
+      emb: null,
+      peaks,
+      override: null,
+    });
+  }
+  for (const pl of state.playlists) {
+    if (String(pl.name || '').toLowerCase() === 'favorites') pl.paths = [];
+  }
+}
+
+async function runListSelfTest() {
+  const shotDir = '/opt/cursor/artifacts';
+  const shot = async (name) => {
+    try {
+      const img = await win.webContents.capturePage();
+      await fs.mkdir(shotDir, { recursive: true });
+      await fs.writeFile(path.join(shotDir, name), img.toPNG());
+    } catch (e) { console.error('capture failed:', e); }
+  };
+  try {
+    const driver = await fs.readFile(path.join(__dirname, '../../test/list-ui-driver.js'), 'utf8');
+    const result = await Promise.race([
+      win.webContents.executeJavaScript(driver, true),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('list ui driver timed out')), 25000)),
+    ]);
+    console.log('LIST_UI', JSON.stringify(result));
+    if (!result || !result.ok) throw new Error('list ui driver failed');
+    await shot('list-controls.png');
+    console.log('LIST_UI OK');
+    app.exit(0);
+  } catch (e) {
+    console.error('LIST_UI FAIL', e);
+    await shot('list-controls-fail.png');
+    app.exit(1);
+  }
 }
 
 // ------------------------------------------------------------ app
@@ -972,7 +1082,7 @@ async function createWindow() {
     },
   });
   Menu.setApplicationMenu(null);
-  if (SMOKE) {
+  if (SMOKE || LIST_SELF_TEST) {
     win.webContents.on('console-message', (_e, level, message) => {
       console.log(`[renderer:${level}] ${message}`);
     });
@@ -984,13 +1094,16 @@ app.whenReady().then(async () => {
   await loadSettings();
   if (ensureFavoritesPlaylist()) await saveSettings();
   await loadCache();
+  if (LIST_SELF_TEST) await seedListSelfTest();
   registerIpc();
   await createWindow();
   if (library.size) {
     // push cached data to renderer once it asks (request-dataset) — nothing to do here
   }
-  if (state.folders.length) rescan();
-  if (SMOKE) {
+  if (state.folders.length && !LIST_SELF_TEST) rescan();
+  if (LIST_SELF_TEST) {
+    setTimeout(() => { runListSelfTest(); }, 700);
+  } else if (SMOKE) {
     setTimeout(async () => {
       try {
         const pl = await win.webContents.executeJavaScript(`(async () => {

@@ -24,7 +24,7 @@ const WEIGHT_KEYS = [
   ['noisiness', 'Noisiness'],
 ];
 
-let dataset = null;          // {n, paths, names, folders, hasEmb, features, peaks, categories, genres, kinds, bpms}
+let dataset = null;          // {n, paths, names, folders, hasEmb, features, peaks, categories, genres, kinds, bpms, volumes}
 let params = null;
 let starmap = null;
 let simPositions = null;     // last similarity layout from main
@@ -42,6 +42,9 @@ let playlistPlayQueue = null;  // array of sample indices for sequential playlis
 let playlistPlayPos = -1;
 let playlistPathSets = new Map(); // pl.id -> Set of paths, rebuilt when dataset or playlists change
 let editingIdx = -1;           // dataset index whose row has its tag editor open (-1 = none)
+let selectedPaths = new Set(); // checked list rows, keyed by sample path
+let selectAnchor = null;       // path of the last checkbox click, for shift-click range
+let pendingVolumes = new Map(); // path -> level while a volume save is in flight
 let tagVocab = { instruments: [], genres: [], kinds: ['oneshot', 'loop'] };
 let osDragPath = null;         // sample path of the current OS drag-out (drop into DAW or onto a playlist)
 const PEAK_BINS = 128;
@@ -99,6 +102,17 @@ async function init() {
 }
 
 function applyDataset(ds, computeIfNeeded) {
+  if (ds && ds.n && !ds.volumes) ds.volumes = new Array(ds.n).fill(1);
+  if (ds && ds.paths && pendingVolumes.size) {
+    for (let i = 0; i < ds.n; i++) {
+      if (pendingVolumes.has(ds.paths[i])) ds.volumes[i] = pendingVolumes.get(ds.paths[i]);
+    }
+  }
+  if (ds && ds.paths) {
+    const have = new Set(ds.paths);
+    for (const p of [...selectedPaths]) if (!have.has(p)) selectedPaths.delete(p);
+    if (selectAnchor && !have.has(selectAnchor)) selectAnchor = null;
+  }
   dataset = ds;
   if (dataset && dataset.peaks && !(dataset.peaks instanceof Uint8Array)) {
     dataset.peaks = new Uint8Array(dataset.peaks);
@@ -208,6 +222,7 @@ function buildControls() {
     for (const el of $('listHead').querySelectorAll('span')) el.classList.remove('sort-active');
     refreshList(true);
   });
+  $('listSelectAll').addEventListener('click', onHeaderCheckClick);
   $('listHead').addEventListener('click', (e) => {
     const key = e.target.dataset && e.target.dataset.sort;
     if (!key || key === 'waveform') return;
@@ -266,7 +281,7 @@ function setView(view, initial = false) {
 
 function updateStatusHints() {
   $('statusRight').innerHTML = params.view === 'list'
-    ? 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;drag row&nbsp;=&nbsp;drop into DAW&nbsp;&nbsp;·&nbsp;&nbsp;right-click&nbsp;=&nbsp;show in Explorer'
+    ? 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;double-click type&nbsp;=&nbsp;loop / one-shot&nbsp;&nbsp;·&nbsp;&nbsp;drag waveform&nbsp;=&nbsp;scrub&nbsp;&nbsp;·&nbsp;&nbsp;drag row&nbsp;=&nbsp;drop into DAW'
     : 'click&nbsp;=&nbsp;play / stop&nbsp;&nbsp;·&nbsp;&nbsp;drag star&nbsp;=&nbsp;drop into DAW&nbsp;&nbsp;·&nbsp;&nbsp;right-click&nbsp;=&nbsp;show in Explorer&nbsp;&nbsp;·&nbsp;&nbsp;wheel&nbsp;=&nbsp;zoom';
 }
 
@@ -670,15 +685,79 @@ function renderListWindow() {
     const idx = listFiltered[start + r];
     paintListRow(rowsEl.children[r], idx);
   }
+  syncHeaderCheck();
+}
+
+function syncHeaderCheck() {
+  const box = $('listSelectAll');
+  if (!box) return;
+  const visible = dataset ? listFiltered.map((i) => dataset.paths[i]) : [];
+  const state = ListControls.headerCheckState(selectedPaths, visible);
+  box.checked = state === 'all' && visible.length > 0;
+  box.indeterminate = state === 'some';
+}
+
+function onHeaderCheckClick(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  if (!dataset) return;
+  const visible = listFiltered.map((i) => dataset.paths[i]);
+  const state = ListControls.headerCheckState(selectedPaths, visible);
+  if (state === 'all') {
+    for (const p of visible) selectedPaths.delete(p);
+  } else {
+    for (const p of visible) selectedPaths.add(p);
+    if (visible.length) selectAnchor = visible[visible.length - 1];
+  }
+  renderListWindow();
+}
+
+function affectedPaths(idx) {
+  if (!dataset || !Number.isFinite(idx) || idx < 0) return [];
+  const have = new Set(dataset.paths);
+  return ListControls.batchPaths(selectedPaths, dataset.paths[idx]).filter((p) => have.has(p));
+}
+
+function onCheckClick(box, shiftKey) {
+  const row = box.closest('.list-row');
+  if (!row || !dataset) return;
+  const idx = parseInt(row.dataset.idx, 10);
+  const path = dataset.paths[idx];
+  if (!path) return;
+  const ordered = listFiltered.map((i) => dataset.paths[i]);
+  if (shiftKey && selectAnchor) {
+    selectedPaths = ListControls.rangeSelect(selectedPaths, ordered, selectAnchor, path);
+  } else if (selectedPaths.has(path)) {
+    selectedPaths.delete(path);
+    selectAnchor = path;
+  } else {
+    selectedPaths.add(path);
+    selectAnchor = path;
+  }
+  renderListWindow();
 }
 
 function makeListRow() {
   const row = document.createElement('div');
   row.className = 'list-row';
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.className = 'list-check';
+  check.tabIndex = -1;
+  check.title = 'Select sample';
   const canvas = document.createElement('canvas');
   canvas.width = LIST_WAVE_W * 2;
   canvas.height = LIST_WAVE_H * 2;
   canvas.draggable = false;
+  const vol = document.createElement('input');
+  vol.type = 'range';
+  vol.className = 'list-vol';
+  vol.min = '0';
+  vol.max = '100';
+  vol.step = '1';
+  vol.value = '100';
+  vol.tabIndex = -1;
+  vol.title = 'Sample volume';
   const dur = document.createElement('div');
   dur.className = 'list-dur';
   const name = document.createElement('div');
@@ -694,8 +773,12 @@ function makeListRow() {
   edit.type = 'button';
   edit.tabIndex = -1;
   edit.textContent = '✎';
-  row.append(canvas, dur, name, kind, bpm, tags, edit);
+  row.append(check, canvas, vol, dur, name, kind, bpm, tags, edit);
   row.addEventListener('change', (e) => {
+    if (e.target.classList.contains('list-vol')) {
+      flushVolumeSave();
+      return;
+    }
     const sel = e.target.closest('.list-edit-kind, .list-edit-instr, .list-edit-genre');
     if (sel) commitRowTags(row);
   });
@@ -739,22 +822,64 @@ async function commitRowTags(row) {
   const kind = row.querySelector('.list-edit-kind').value;
   const instrument = row.querySelector('.list-edit-instr').value;
   const genre = row.querySelector('.list-edit-genre').value;
-  dataset.kinds[idx] = kind;
-  dataset.categories[idx] = instrument === '—' ? '—' : instrument;
-  dataset.genres[idx] = genre === '—' ? '—' : genre;
-  if (kind !== 'loop') dataset.bpms[idx] = null;
+  const paths = affectedPaths(idx);
+  for (const p of paths) {
+    const i = dataset.paths.indexOf(p);
+    if (i < 0) continue;
+    dataset.kinds[i] = kind;
+    dataset.categories[i] = instrument === '—' ? '—' : instrument;
+    dataset.genres[i] = genre === '—' ? '—' : genre;
+    if (kind !== 'loop') dataset.bpms[i] = null;
+  }
   try {
-    await api.setSampleTags(dataset.paths[idx], { kind, instrument, genre });
+    await api.setSampleTags(paths, { kind, instrument, genre });
   } catch (e) {
     showNotice({ msg: `Couldn't save tags: ${e.message}` });
   }
   renderTagFilters();
   restyle();
+  renderListWindow();
+}
+
+async function cycleKindAt(idx) {
+  if (!dataset || !Number.isFinite(idx)) return;
+  const kind = dataset.kinds ? dataset.kinds[idx] : null;
+  if (!ListControls.isCyclableKind(kind)) return;
+  const next = ListControls.cycleKind(kind);
+  const paths = affectedPaths(idx);
+  for (const p of paths) {
+    const i = dataset.paths.indexOf(p);
+    if (i < 0) continue;
+    dataset.kinds[i] = next;
+    if (next !== 'loop') dataset.bpms[i] = null;
+  }
+  renderTagFilters();
+  restyle();
+  renderListWindow();
+  try {
+    await api.setSampleTags(paths, { kind: next });
+  } catch (e) {
+    showNotice({ msg: `Couldn't save tags: ${e.message}` });
+  }
+}
+
+function sampleVolume(idx) {
+  const arr = dataset && dataset.volumes;
+  const v = arr ? arr[idx] : 1;
+  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
 }
 
 function paintListRow(row, idx) {
   row.dataset.idx = String(idx);
+  const path = dataset.paths[idx];
   row.classList.toggle('playing', idx === playingIdx);
+  row.classList.toggle('selected', selectedPaths.has(path));
+  const check = row.querySelector('.list-check');
+  check.checked = selectedPaths.has(path);
+  const vol = row.querySelector('.list-vol');
+  const pct = Math.round(sampleVolume(idx) * 100);
+  if (document.activeElement !== vol) vol.value = String(pct);
+  vol.title = `Sample volume ${pct}%`;
   drawWaveform(row.querySelector('canvas'), idx);
   const dur = dataset.features.duration[idx];
   row.querySelector('.list-dur').textContent = dur != null ? formatDur(dur) : '—';
@@ -771,8 +896,10 @@ function paintListRow(row, idx) {
 
   const editing = idx === editingIdx;
   row.classList.toggle('editing', editing);
+  const cyclable = ListControls.isCyclableKind(kind);
   if (editing) {
-    kindEl.classList.remove('loop');
+    kindEl.classList.remove('loop', 'cyclable');
+    kindEl.title = '';
     kindEl.replaceChildren(makeTagSelect('list-edit-kind', ['oneshot', 'loop'], kind === 'loop' ? 'loop' : 'oneshot'));
     // relabel the kind select options for readability
     const ks = kindEl.querySelector('select');
@@ -788,6 +915,8 @@ function paintListRow(row, idx) {
 
   kindEl.textContent = kind === 'loop' ? 'Loop' : kind === 'oneshot' ? 'One-shot' : '—';
   kindEl.classList.toggle('loop', kind === 'loop');
+  kindEl.classList.toggle('cyclable', cyclable);
+  kindEl.title = cyclable ? 'Double-click to cycle loop / one-shot' : '';
   bpmEl.textContent = kind === 'loop' && bpm != null ? String(bpm) : '—';
   tags.classList.remove('edit');
   tags.replaceChildren();
@@ -848,6 +977,19 @@ function drawWaveform(canvas, idx) {
     ctx.fillRect(i * barW, mid - bh / 2, Math.max(1, barW - 0.5), bh);
   }
   ctx.globalAlpha = 1;
+  if (idx !== playingIdx || (!playBuf && scrubFrac == null && !playPending)) return;
+  let frac = 0;
+  if (scrubFrac != null) frac = scrubFrac;
+  else if (playBuf && playBuf.duration > 0) frac = currentPlaySec() / playBuf.duration;
+  frac = Math.min(1, Math.max(0, frac));
+  const x = frac * w;
+  const trackH = 6;
+  ctx.fillStyle = 'rgba(243, 230, 212, 0.2)';
+  ctx.fillRect(0, h - trackH, w, trackH);
+  ctx.fillStyle = '#fc3b00';
+  ctx.fillRect(0, h - trackH, x, trackH);
+  ctx.fillStyle = '#fff6ea';
+  ctx.fillRect(Math.max(0, Math.round(x) - 1), 0, 2, h);
 }
 
 function bindListPointer() {
@@ -857,6 +999,13 @@ function bindListPointer() {
   let dragStarted = false;
 
   rowsEl.addEventListener('click', (e) => {
+    const box = e.target.closest('.list-check');
+    if (box) {
+      e.preventDefault();
+      e.stopPropagation();
+      onCheckClick(box, e.shiftKey);
+      return;
+    }
     const btn = e.target.closest('.list-edit-btn');
     if (!btn) return;
     e.stopPropagation();
@@ -867,14 +1016,40 @@ function bindListPointer() {
     else openRowEditor(idx);
   });
 
+  rowsEl.addEventListener('dblclick', (e) => {
+    const kindEl = e.target.closest('.list-kind');
+    if (!kindEl || e.target.closest('select')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const row = kindEl.closest('.list-row');
+    if (!row) return;
+    cycleKindAt(parseInt(row.dataset.idx, 10));
+  });
+
+  rowsEl.addEventListener('input', (e) => {
+    if (!e.target.classList.contains('list-vol')) return;
+    const row = e.target.closest('.list-row');
+    if (!row) return;
+    applyVolume(parseInt(row.dataset.idx, 10), parseInt(e.target.value, 10) / 100);
+  });
+
+  rowsEl.addEventListener('pointerdown', (e) => {
+    const canvas = e.target.closest('canvas');
+    if (!canvas || e.button !== 0) return;
+    const row = canvas.closest('.list-row');
+    if (!row) return;
+    e.preventDefault();
+    e.stopPropagation();
+    beginScrub(parseInt(row.dataset.idx, 10), canvas, e);
+  });
+
   rowsEl.addEventListener('mousedown', (e) => {
-    if (e.button === 2) return;
-    if (e.target.closest('select')) return;
-    if (e.target.closest('.list-edit-btn')) return;
+    if (e.button !== 0) return;
     const editRow = e.target.closest('.list-row');
-    if (editingIdx >= 0 && (!editRow || parseInt(editRow.dataset.idx, 10) !== editingIdx)) {
-      closeRowEditor();
+    if (editingIdx >= 0 && !e.target.closest('select')) {
+      if (!editRow || parseInt(editRow.dataset.idx, 10) !== editingIdx) closeRowEditor();
     }
+    if (e.target.closest('.list-check, .list-vol, .list-kind, select, .list-edit-btn, canvas')) return;
     const chip = e.target.closest('.list-tags span');
     if (chip && chip.dataset.val) {
       toggleListTag(chip);
@@ -967,8 +1142,20 @@ function handleHover(idx, mx, my) {
 let audioCtx = null;
 let currentSource = null;
 let masterGain = null;
+let sampleGain = null;
+let playBuf = null;
+let playOffset = 0;
+let playStartedAt = 0;
+let queuedFrac = 0;
+let scrubFrac = null;
+let scrubbing = false;
+let scrubMove = null;
+let scrubUp = null;
+let playheadRaf = 0;
 let playGen = 0;
 let playPending = false;
+let volumeSaveTimer = null;
+let volumeSaveGen = 0;
 
 function clearPlayingHighlight() {
   playingIdx = -1;
@@ -976,13 +1163,40 @@ function clearPlayingHighlight() {
   if (params && params.view === 'list') renderListWindow();
 }
 
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new AudioContext();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (!masterGain) {
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = params.volume == null ? 0.9 : params.volume;
+    masterGain.connect(audioCtx.destination);
+  }
+  return audioCtx;
+}
+
 function stopSource() {
   if (currentSource) {
     currentSource.onended = null;
     try { currentSource.stop(); } catch { /* already stopped */ }
+    try { currentSource.disconnect(); } catch { /* already disconnected */ }
     currentSource = null;
   }
-  masterGain = null;
+  if (sampleGain) {
+    try { sampleGain.disconnect(); } catch { /* already disconnected */ }
+    sampleGain = null;
+  }
+}
+
+function endScrubListeners() {
+  if (scrubMove) window.removeEventListener('pointermove', scrubMove);
+  if (scrubUp) window.removeEventListener('pointerup', scrubUp);
+  scrubMove = null;
+  scrubUp = null;
+}
+
+function stopPlayhead() {
+  if (playheadRaf) cancelAnimationFrame(playheadRaf);
+  playheadRaf = 0;
 }
 
 function stopAudio() {
@@ -990,14 +1204,99 @@ function stopAudio() {
   playPending = false;
   playlistPlayQueue = null;
   playlistPlayPos = -1;
+  scrubbing = false;
+  scrubFrac = null;
+  queuedFrac = 0;
+  playBuf = null;
+  endScrubListeners();
   stopSource();
+  stopPlayhead();
   clearPlayingHighlight();
 }
 
-async function handleClick(idx) {
-  if (!dataset) return;
-  if (playingIdx === idx && (currentSource || playPending)) {
-    stopAudio();
+function currentPlaySec() {
+  if (!playBuf) return 0;
+  if (!currentSource || !audioCtx) return playOffset;
+  return Math.min(playBuf.duration, Math.max(0, playOffset + (audioCtx.currentTime - playStartedAt)));
+}
+
+function paintPlayingWave() {
+  if (!params || params.view !== 'list' || !$('listRows')) return;
+  for (const row of $('listRows').children) {
+    if (parseInt(row.dataset.idx, 10) === playingIdx) {
+      drawWaveform(row.querySelector('canvas'), playingIdx);
+      return;
+    }
+  }
+}
+
+function kickPlayhead() {
+  if (playheadRaf) return;
+  const loop = () => {
+    if (playingIdx < 0 || (!currentSource && !playPending && scrubFrac == null)) {
+      playheadRaf = 0;
+      return;
+    }
+    paintPlayingWave();
+    playheadRaf = requestAnimationFrame(loop);
+  };
+  playheadRaf = requestAnimationFrame(loop);
+}
+
+function beginSource(buf, offsetSec, gen) {
+  ensureAudio();
+  stopSource();
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  sampleGain = audioCtx.createGain();
+  sampleGain.gain.value = playingIdx >= 0 ? sampleVolume(playingIdx) : 1;
+  src.connect(sampleGain).connect(masterGain);
+  src.onended = () => onSourceEnded(gen);
+  const dur = buf.duration || 0;
+  const t = Math.max(0, Math.min(offsetSec, Math.max(0, dur - 0.01)));
+  src.start(0, t);
+  currentSource = src;
+  playOffset = t;
+  playStartedAt = audioCtx.currentTime;
+  playPending = false;
+  kickPlayhead();
+}
+
+function onSourceEnded(gen) {
+  if (gen !== playGen) return;
+  currentSource = null;
+  if (sampleGain) {
+    try { sampleGain.disconnect(); } catch { /* already disconnected */ }
+    sampleGain = null;
+  }
+  playPending = false;
+  if (playlistPlayQueue && playlistPlayPos >= 0) {
+    const nextPos = playlistPlayPos + 1;
+    if (nextPos < playlistPlayQueue.length) {
+      playlistPlayPos = nextPos;
+      const nextIdx = playlistPlayQueue[nextPos];
+      playingIdx = -1;
+      handleClick(nextIdx);
+      return;
+    }
+  }
+  playBuf = null;
+  clearPlayingHighlight();
+}
+
+function seekPlayback(fraction) {
+  if (!playBuf || playingIdx < 0) return;
+  const gen = playGen;
+  beginSource(playBuf, ListControls.scrubSeconds(fraction, playBuf.duration), gen);
+}
+
+async function startPlayback(idx, frac) {
+  if (!dataset || idx < 0 || idx >= dataset.n) return;
+  queuedFrac = Math.min(1, Math.max(0, frac || 0));
+  if (playingIdx === idx && playBuf && !playPending) {
+    seekPlayback(queuedFrac);
+    if (starmap) starmap.setPlaying(idx);
+    paintPlayingWave();
     return;
   }
   playGen++;
@@ -1005,11 +1304,13 @@ async function handleClick(idx) {
   stopSource();
   playingIdx = idx;
   playPending = true;
-  starmap.setPlaying(idx);
+  playBuf = null;
+  if (starmap) starmap.setPlaying(idx);
   if (params.view === 'list') renderListWindow();
+  kickPlayhead();
   try {
     const bytes = await api.readAudio(dataset.paths[idx]);
-    if (!audioCtx) audioCtx = new AudioContext();
+    ensureAudio();
     const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     let buf;
     try {
@@ -1023,39 +1324,114 @@ async function handleClick(idx) {
       buf.copyToChannel(data, 0);
     }
     if (gen !== playGen) return;
-    stopSource();
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    const gain = audioCtx.createGain();
-    gain.gain.value = params.volume == null ? 0.9 : params.volume;
-    src.connect(gain).connect(audioCtx.destination);
-    src.onended = () => {
-      if (gen !== playGen) return;
-      currentSource = null;
-      masterGain = null;
-      playPending = false;
-      // sequential playlist playback: advance to next track
-      if (playlistPlayQueue && playlistPlayPos >= 0) {
-        const nextPos = playlistPlayPos + 1;
-        if (nextPos < playlistPlayQueue.length) {
-          playlistPlayPos = nextPos;
-          const nextIdx = playlistPlayQueue[nextPos];
-          playingIdx = -1; // clear so handleClick doesn't think it's a toggle-stop
-          handleClick(nextIdx);
-          return;
-        }
-      }
-      clearPlayingHighlight();
-    };
-    src.start();
-    currentSource = src;
-    masterGain = gain;
-    playPending = false;
+    playBuf = buf;
+    beginSource(buf, ListControls.scrubSeconds(queuedFrac, buf.duration), gen);
+    paintPlayingWave();
   } catch (e) {
     if (gen !== playGen) return;
     playPending = false;
     clearPlayingHighlight();
     showNotice({ kind: 'warn', msg: `Can't play ${dataset.names[idx]}: ${e.message}` });
+  }
+}
+
+function handleClick(idx) {
+  if (!dataset || scrubbing) return;
+  if (playingIdx === idx && (currentSource || playPending)) {
+    stopAudio();
+    return;
+  }
+  startPlayback(idx, 0);
+}
+
+function canvasFraction(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
+  return ListControls.scrubFraction(e.clientX - rect.left, rect.width);
+}
+
+function beginScrub(idx, canvas, e) {
+  if (!dataset || !Number.isFinite(idx)) return;
+  endScrubListeners();
+  scrubbing = true;
+  scrubFrac = canvasFraction(canvas, e);
+  queuedFrac = scrubFrac;
+  if (playingIdx === idx && playBuf && !playPending) seekPlayback(scrubFrac);
+  else startPlayback(idx, scrubFrac);
+  paintPlayingWave();
+  let lastSeek = 0;
+  scrubMove = (ev) => {
+    if (!scrubbing) return;
+    const row = [...$('listRows').children].find((r) => parseInt(r.dataset.idx, 10) === idx);
+    const live = row ? row.querySelector('canvas') : canvas;
+    scrubFrac = canvasFraction(live, ev);
+    queuedFrac = scrubFrac;
+    const now = performance.now();
+    if (playingIdx === idx && playBuf && now - lastSeek > 50) {
+      lastSeek = now;
+      seekPlayback(scrubFrac);
+    }
+    paintPlayingWave();
+  };
+  scrubUp = () => {
+    endScrubListeners();
+    if (scrubbing && playingIdx === idx && playBuf && scrubFrac != null) seekPlayback(scrubFrac);
+    scrubbing = false;
+    scrubFrac = null;
+    paintPlayingWave();
+  };
+  window.addEventListener('pointermove', scrubMove);
+  window.addEventListener('pointerup', scrubUp);
+}
+
+function applyVolume(idx, value) {
+  if (!dataset || !Number.isFinite(idx)) return;
+  const level = Math.min(1, Math.max(0, value));
+  const paths = affectedPaths(idx);
+  for (const p of paths) {
+    const i = dataset.paths.indexOf(p);
+    if (i < 0) continue;
+    dataset.volumes[i] = level;
+    pendingVolumes.set(p, level);
+  }
+  for (const row of $('listRows').children) {
+    const i = parseInt(row.dataset.idx, 10);
+    if (!Number.isFinite(i) || !paths.includes(dataset.paths[i])) continue;
+    const slider = row.querySelector('.list-vol');
+    if (!slider) continue;
+    if (document.activeElement !== slider) slider.value = String(Math.round(level * 100));
+    slider.title = `Sample volume ${Math.round(level * 100)}%`;
+  }
+  if (sampleGain && audioCtx && playingIdx >= 0 && paths.includes(dataset.paths[playingIdx])) {
+    sampleGain.gain.setValueAtTime(level, audioCtx.currentTime);
+  }
+  scheduleVolumeSave();
+}
+
+function scheduleVolumeSave() {
+  clearTimeout(volumeSaveTimer);
+  volumeSaveTimer = setTimeout(() => flushVolumeSave(), 200);
+}
+
+async function flushVolumeSave() {
+  clearTimeout(volumeSaveTimer);
+  if (!pendingVolumes.size) return;
+  const gen = ++volumeSaveGen;
+  const groups = new Map();
+  for (const [p, v] of pendingVolumes) {
+    const stored = ListControls.volumeOverride(v);
+    const key = stored == null ? '1' : String(stored);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
+  }
+  try {
+    for (const [key, paths] of groups) {
+      await api.setSampleTags(paths, { volume: key === '1' ? 1 : Number(key) });
+      if (gen !== volumeSaveGen) return;
+    }
+    if (gen !== volumeSaveGen) return;
+    pendingVolumes.clear();
+  } catch (e) {
+    showNotice({ msg: `Couldn't save volume: ${e.message}` });
   }
 }
 
@@ -1225,10 +1601,16 @@ function makePlaylistDropTarget(el, pl) {
     } catch { /* keep fallback */ }
     osDragPath = null;
     if (!dataset || !dataset.paths.includes(p)) return;
-    playlists = await api.playlistsAdd(pl.id, [p]);
+    const paths = selectedPaths.has(p)
+      ? [...selectedPaths].filter((x) => dataset.paths.includes(x))
+      : [p];
+    playlists = await api.playlistsAdd(pl.id, paths);
     rebuildPlaylistPathSets();
     renderPlaylists();
-    showNotice({ msg: `Added "${p.split(/[\\/]/).pop()}" to "${pl.name}"` });
+    const msg = paths.length > 1
+      ? `Added ${paths.length} samples to "${pl.name}"`
+      : `Added "${p.split(/[\\/]/).pop()}" to "${pl.name}"`;
+    showNotice({ msg });
   });
 }
 
@@ -1374,15 +1756,19 @@ function showContextMenu(idx, x, y) {
   const menu = $('ctxMenu');
   ctxMenuIdx = idx;
 
+  const paths = affectedPaths(idx);
   const items = [];
-  // "Add to playlist >" submenu
-  items.push({ label: 'Add to playlist\u2026', submenu: playlists.length ? playlists.map((pl) => ({
+  const addLabel = paths.length > 1 ? `Add ${paths.length} samples to playlist\u2026` : 'Add to playlist\u2026';
+  items.push({ label: addLabel, submenu: playlists.length ? playlists.map((pl) => ({
     label: `${pl.name} (${pl.paths.length})`,
     action: async () => {
-      playlists = await api.playlistsAdd(pl.id, [dataset.paths[idx]]);
+      playlists = await api.playlistsAdd(pl.id, paths);
       rebuildPlaylistPathSets();
       renderPlaylists();
-      showNotice({ msg: `Added "${dataset.names[idx]}" to "${pl.name}"` });
+      const msg = paths.length > 1
+        ? `Added ${paths.length} samples to "${pl.name}"`
+        : `Added "${dataset.names[idx]}" to "${pl.name}"`;
+      showNotice({ msg });
     },
   })) : [{ label: 'No playlists yet', disabled: true }] });
 
@@ -1390,15 +1776,16 @@ function showContextMenu(idx, x, y) {
   if (activePlaylistId) {
     const pl = playlists.find((p) => p.id === activePlaylistId);
     if (pl) {
-      const path = dataset.paths[idx];
-      if (pl.paths.includes(path)) {
-        items.push({ label: `Remove from "${pl.name}"`, action: async () => {
-          playlists = await api.playlistsRemove(pl.id, path);
+      const inPl = paths.filter((p) => pl.paths.includes(p));
+      if (inPl.length) {
+        const label = inPl.length > 1 ? `Remove ${inPl.length} samples from "${pl.name}"` : `Remove from "${pl.name}"`;
+        items.push({ label, action: async () => {
+          playlists = await api.playlistsRemove(pl.id, inPl);
           rebuildPlaylistPathSets();
           renderPlaylists();
           restyle();
           refreshList(true);
-          showNotice({ msg: `Removed from "${pl.name}"` });
+          showNotice({ msg: inPl.length > 1 ? `Removed ${inPl.length} samples from "${pl.name}"` : `Removed from "${pl.name}"` });
         }});
       }
     }
