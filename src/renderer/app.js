@@ -807,7 +807,13 @@ function makeListRow() {
   edit.tabIndex = -1;
   edit.textContent = '✎';
   edit.title = 'Edit tags';
-  actions.append(sectionBtn, edit);
+  const fav = document.createElement('button');
+  fav.className = 'list-fav-btn';
+  fav.type = 'button';
+  fav.tabIndex = -1;
+  fav.title = 'Add to favorites';
+  fav.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+  actions.append(sectionBtn, edit, fav);
   row.append(check, canvas, vol, dur, name, kind, bpm, tags, actions);
   row.addEventListener('change', (e) => {
     if (e.target.classList.contains('list-vol')) {
@@ -922,6 +928,11 @@ function paintListRow(row, idx) {
   if (document.activeElement !== vol) vol.value = String(pct);
   vol.title = `Sample volume ${pct}%`;
   drawWaveform(row.querySelector('canvas'), idx);
+  const favBtn = row.querySelector('.list-fav-btn');
+  const favSet = playlistPathSets.get('pl_favorites');
+  const isFav = favSet && favSet.has(dataset.paths[idx]);
+  favBtn.classList.toggle('active', !!isFav);
+  favBtn.title = isFav ? 'Remove from favorites' : 'Add to favorites';
   const dur = dataset.features.duration[idx];
   row.querySelector('.list-dur').textContent = dur != null ? formatDur(dur) : '—';
   const name = row.querySelector('.list-name');
@@ -1065,6 +1076,14 @@ function bindListPointer() {
       openSectionEditor(parseInt(row.dataset.idx, 10));
       return;
     }
+    const fav = e.target.closest('.list-fav-btn');
+    if (fav) {
+      e.stopPropagation();
+      const row = fav.closest('.list-row');
+      if (!row) return;
+      toggleFavorite(parseInt(row.dataset.idx, 10));
+      return;
+    }
     const btn = e.target.closest('.list-edit-btn');
     if (!btn) return;
     e.stopPropagation();
@@ -1108,7 +1127,7 @@ function bindListPointer() {
     if (editingIdx >= 0 && !e.target.closest('select')) {
       if (!editRow || parseInt(editRow.dataset.idx, 10) !== editingIdx) closeRowEditor();
     }
-    if (e.target.closest('.list-check, .list-vol, .list-kind, select, .list-edit-btn, .list-section-btn, canvas')) return;
+    if (e.target.closest('.list-check, .list-vol, .list-kind, select, .list-edit-btn, .list-section-btn, .list-fav-btn, canvas')) return;
     const chip = e.target.closest('.list-tags span');
     if (chip && chip.dataset.val) {
       toggleListTag(chip);
@@ -1835,6 +1854,24 @@ function togglePlaylistFilter(id) {
   restyle();
   refreshList(true);
   if (params.view === 'map') starmap.fit();
+}
+
+async function toggleFavorite(idx) {
+  if (!dataset || idx < 0 || idx >= dataset.paths.length) return;
+  const path = dataset.paths[idx];
+  const favSet = playlistPathSets.get('pl_favorites');
+  const isFav = favSet && favSet.has(path);
+  if (isFav) {
+    playlists = await api.playlistsRemove('pl_favorites', path);
+    showNotice({ msg: `Removed "${dataset.names[idx]}" from favorites` });
+  } else {
+    playlists = await api.playlistsAdd('pl_favorites', [path]);
+    showNotice({ msg: `Added "${dataset.names[idx]}" to favorites` });
+  }
+  rebuildPlaylistPathSets();
+  renderPlaylists();
+  restyle();
+  refreshList(false);
 }
 
 // ---- context menu (right-click on map or list) ----

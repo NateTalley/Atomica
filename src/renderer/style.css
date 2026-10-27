@@ -335,7 +335,7 @@ input[type="range"] {
 }
 #listHead {
   display: grid;
-  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 52px;
+  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 78px;
   gap: 8px;
   padding: 0 10px;
   height: 28px;
@@ -378,7 +378,7 @@ input[type="range"] {
 }
 .list-row {
   display: grid;
-  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 52px;
+  grid-template-columns: 22px 132px 70px 52px minmax(72px, 1fr) 64px 40px minmax(80px, 0.9fr) 78px;
   gap: 8px;
   padding: 0 10px;
   height: 36px;
@@ -507,6 +507,34 @@ input[type="range"] {
 .list-section-btn:hover { color: var(--accent); background: rgba(255, 193, 7, 0.12); }
 .list-row.editing .list-edit-btn,
 .list-row.sectioning .list-section-btn { opacity: 1; color: var(--accent); }
+
+/* Heart/favorites toggle in the list row. Outline shows on hover; filled when favorited. */
+.list-fav-btn {
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, transform 0.1s ease;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  font-size: 13px;
+  color: var(--dim);
+  cursor: pointer;
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.list-row:hover .list-fav-btn { opacity: 1; }
+.list-fav-btn:hover { color: var(--accent-hot); background: rgba(255, 90, 31, 0.1); }
+.list-fav-btn.active {
+  opacity: 1;
+  color: var(--accent-hot);
+}
+.list-fav-btn.active svg { fill: currentColor; }
+.list-fav-btn:active { transform: scale(0.9); }
 .list-row.editing { background: rgba(255, 193, 7, 0.1); cursor: default; }
 .list-edit-kind,
 .list-edit-instr,
