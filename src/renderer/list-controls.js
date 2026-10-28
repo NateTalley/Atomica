@@ -66,6 +66,23 @@
     return next;
   }
 
+  // Editor tab: the playing row, otherwise the last checked row. Never a list default.
+  function editorTarget({ playingPath, anchorPath, anchorSelected } = {}) {
+    if (playingPath) return playingPath;
+    if (anchorPath && anchorSelected) return anchorPath;
+    return null;
+  }
+
+  // Max-length filter. Unknown durations stay visible. Equal to the cap stays visible.
+  function withinMaxDuration(duration, enabled, maxSeconds) {
+    if (!enabled) return true;
+    const max = Number(maxSeconds);
+    if (!Number.isFinite(max) || max <= 0) return true;
+    const d = Number(duration);
+    if (!Number.isFinite(d)) return true;
+    return d <= max + 1e-6;
+  }
+
   function headerCheckState(selected, visiblePaths) {
     if (!visiblePaths || !visiblePaths.length) return 'none';
     let n = 0;
@@ -84,6 +101,8 @@
     auditionGain,
     batchPaths,
     rangeSelect,
+    editorTarget,
+    withinMaxDuration,
     headerCheckState,
   };
 })(globalThis);

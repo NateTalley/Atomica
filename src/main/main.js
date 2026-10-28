@@ -121,6 +121,8 @@ const defaultParams = () => ({
   sizeBy: 'loudness',
   view: 'map',
   volume: 0.9,
+  maxDurationOn: true,
+  maxDuration: 59,
 });
 
 const state = {
@@ -128,6 +130,8 @@ const state = {
   useEmbeddings: true,
   params: defaultParams(),
   playlists: [],  // [{ id, name, paths: [] }]
+  excluded: [],   // sample paths hidden from the library; the files stay on disk
+  sections: {},   // path -> { start, end, loop, rate } applied in the library
 };
 
 // path -> { p, mt, sz, f: {..features}, mfcc: [], emb: Float32Array|null, peaks: Uint8Array|null }
@@ -149,6 +153,14 @@ async function loadSettings() {
     if (typeof s.useEmbeddings === 'boolean') state.useEmbeddings = s.useEmbeddings;
     if (s.params) state.params = { ...defaultParams(), ...s.params, weights: { ...defaultParams().weights, ...(s.params.weights || {}) } };
     if (Array.isArray(s.playlists)) state.playlists = s.playlists;
+    if (Array.isArray(s.excluded)) state.excluded = s.excluded.filter((p) => typeof p === 'string');
+    if (s.sections && typeof s.sections === 'object') {
+      state.sections = {};
+      for (const [p, sec] of Object.entries(s.sections)) {
+        const clean = SectionEditor.normalizeSection(sec);
+        if (typeof p === 'string' && clean) state.sections[p] = clean;
+      }
+    }
   } catch { /* first run */ }
 }
 
@@ -163,7 +175,7 @@ async function saveSettings() {
   try {
     await fs.writeFile(settingsFile(), JSON.stringify({
       folders: state.folders, useEmbeddings: state.useEmbeddings, params: state.params,
-      playlists: state.playlists,
+      playlists: state.playlists, excluded: state.excluded, sections: state.sections,
     }, null, 2));
   } catch (e) { console.error('saveSettings:', e); }
 }
@@ -184,7 +196,11 @@ async function loadCache() {
         peaks = new Uint8Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
         if (peaks.length !== PEAK_BINS) peaks = null;
       }
-      library.set(e.p, { p: e.p, mt: e.mt, sz: e.sz, f: e.f, mfcc: e.mfcc, emb, peaks, override: (e.override && typeof e.override === 'object') ? e.override : null });
+      library.set(e.p, {
+        p: e.p, mt: e.mt, sz: e.sz, f: e.f, mfcc: e.mfcc, emb, peaks,
+        override: (e.override && typeof e.override === 'object') ? e.override : null,
+        lyrics: typeof e.lyrics === 'string' ? e.lyrics : null,
+      });
     }
   } catch { /* no cache yet */ }
 }
@@ -203,6 +219,7 @@ async function saveCache() {
         emb: packB64(e.emb),
         peaks: packB64(e.peaks),
         override: e.override || null,
+        lyrics: typeof e.lyrics === 'string' ? e.lyrics : null,
       });
     }
     await fs.writeFile(cacheFile(), JSON.stringify({ version: CACHE_VERSION, entries }));
@@ -291,7 +308,9 @@ function pumpEmbedJobs() {
     return;
   }
   embedder.busy = true;
-  embedder.currentPaths = job.msg.items ? job.msg.items.map((it) => it.path) : [];
+  embedder.currentPaths = job.msg.items
+    ? job.msg.items.map((it) => it.path)
+    : (job.msg.path ? [job.msg.path] : []);
   embedder.onResult = job.handler;
   ew.postMessage(job.msg, job.transfers);
 }
@@ -408,9 +427,10 @@ async function rescan() {
       await ensureTextEmbeds();
     }
 
+    if (pruneUserPaths()) await saveSettings();
     await saveCache();
     sendDataset();
-    if (state.params.mode === 'similarity' && library.size) computeLayout(state.params);
+    if (state.params.mode === 'similarity' && datasetOrder.length) computeLayout(state.params);
     progress('idle', 0, 0, '', true);
   } catch (e) {
     console.error('rescan failed:', e);
@@ -619,8 +639,29 @@ function analyzeFiles(files) {
 
 // ------------------------------------------------------------ dataset & layout
 
+function libraryPathsInOrder() {
+  const skip = new Set(state.excluded);
+  return [...library.keys()].filter((p) => !skip.has(p)).sort();
+}
+
+function pruneUserPaths() {
+  let changed = false;
+  const nextExcluded = state.excluded.filter((p) => library.has(p));
+  if (nextExcluded.length !== state.excluded.length) {
+    state.excluded = nextExcluded;
+    changed = true;
+  }
+  for (const p of Object.keys(state.sections)) {
+    if (!library.has(p)) {
+      delete state.sections[p];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function buildDataset() {
-  datasetOrder = [...library.keys()].sort();
+  datasetOrder = libraryPathsInOrder();
   const n = datasetOrder.length;
   const peaks = new Uint8Array(n * PEAK_BINS);
   const ds = {
@@ -634,6 +675,8 @@ function buildDataset() {
     kinds: new Array(n),
     bpms: new Array(n),
     volumes: new Array(n),
+    lyrics: new Array(n),
+    excluded: state.excluded.filter((p) => library.has(p)),
     peaks,
     features: Object.fromEntries(SCALARS.map((k) => [k, new Array(n)])),
   };
@@ -651,6 +694,7 @@ function buildDataset() {
     ds.bpms[i] = kind === 'loop' ? (e.f && e.f.bpm != null ? e.f.bpm : null) : null;
     const vol = e.override && typeof e.override.volume === 'number' ? e.override.volume : 1;
     ds.volumes[i] = Math.min(1, Math.max(0, vol));
+    ds.lyrics[i] = typeof e.lyrics === 'string' ? e.lyrics : null;
     for (const k of SCALARS) ds.features[k][i] = e.f[k] ?? null;
   }
   return ds;
@@ -807,6 +851,8 @@ function registerIpc() {
     params: state.params,
     sampleCount: library.size,
     playlists: state.playlists,
+    excluded: state.excluded,
+    sections: state.sections,
   }));
 
   ipcMain.handle('pick-folder', async () => {
@@ -952,6 +998,93 @@ function registerIpc() {
   });
 
   ipcMain.handle('sample:saveSection', (_e, req) => saveSampleSection(req));
+
+  ipcMain.handle('section:set', async (_e, samplePath, sec) => {
+    if (!library.has(samplePath)) throw new Error('unknown sample');
+    if (!sec) delete state.sections[samplePath];
+    else {
+      const clean = SectionEditor.normalizeSection(sec);
+      if (!clean) throw new Error('invalid section');
+      state.sections[samplePath] = clean;
+    }
+    await saveSettings();
+    return true;
+  });
+
+  ipcMain.handle('sample:exclude', async (_e, paths) => {
+    const list = (Array.isArray(paths) ? paths : [paths]).filter((p) => typeof p === 'string' && library.has(p));
+    const set = new Set(state.excluded);
+    for (const p of list) set.add(p);
+    state.excluded = [...set];
+    await saveSettings();
+    publishLibraryChange();
+    return state.excluded;
+  });
+
+  ipcMain.handle('sample:restore', async (_e, paths) => {
+    const drop = new Set(Array.isArray(paths) ? paths : [paths]);
+    state.excluded = state.excluded.filter((p) => !drop.has(p));
+    await saveSettings();
+    publishLibraryChange();
+    return state.excluded;
+  });
+
+  ipcMain.handle('sample:transcribe', (_e, paths) => transcribeSamples(paths));
+}
+
+function publishLibraryChange() {
+  sendDataset();
+  if (state.params.mode === 'similarity' && datasetOrder.length) {
+    try { computeLayout(state.params); } catch (err) { console.error('layout after library change:', err); }
+  }
+}
+
+let transcribeChain = Promise.resolve();
+
+function transcribeSamples(paths) {
+  const run = transcribeChain.then(() => transcribeSamplesNow(paths));
+  transcribeChain = run.catch(() => {});
+  return run;
+}
+
+async function transcribeSamplesNow(paths) {
+  const list = [...new Set((Array.isArray(paths) ? paths : [paths]).filter((p) => library.has(p)))];
+  if (!list.length) throw new Error('unknown sample');
+  if (scanning) throw new Error('library is scanning');
+  const { decodeMono, resampleLinear } = await import('./analysis/dsp.js');
+  let transcribed = 0;
+  let failed = 0;
+  let error = '';
+  try {
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      progress('transcribe', i, list.length, `Transcribing ${path.basename(p)}…`, true);
+      try {
+        const decoded = await decodeMono(p, 15 * 60);
+        const audio = resampleLinear(decoded.data, decoded.sr, 16000);
+        const text = await new Promise((resolve, reject) => {
+          enqueueEmbedJob({ type: 'transcribe', path: p, audio }, [audio.buffer], (msg) => {
+            if (msg.type === 'transcribed') resolve(typeof msg.text === 'string' ? msg.text : '');
+            else reject(new Error(msg.error || 'transcription failed'));
+          });
+        });
+        const entry = library.get(p);
+        if (entry) {
+          entry.lyrics = text.slice(0, 4000);
+          transcribed += 1;
+        }
+      } catch (err) {
+        failed += 1;
+        error = error || String((err && err.message) || err);
+        console.error('transcribe failed:', p, err);
+      }
+    }
+    await saveCache();
+    sendDataset();
+  } finally {
+    progress('idle', 0, 0, '', true);
+  }
+  return { transcribed, failed, error };
 }
 
 // Write the selected PCM back as 16-bit WAV. Copy keeps the source file; replace overwrites it.
@@ -1022,7 +1155,11 @@ async function saveSampleSection(req) {
     entry.mfcc = analyzed.mfcc;
     entry.emb = null;
     entry.peaks = analyzed.peaks;
+    entry.lyrics = null;
     library.set(dest, entry);
+    if (state.sections[sourcePath] || state.sections[dest]) playlistsChanged = true;
+    delete state.sections[sourcePath];
+    if (dest !== sourcePath) delete state.sections[dest];
   } else {
     library.set(dest, {
       p: dest,

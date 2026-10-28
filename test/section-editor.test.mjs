@@ -44,7 +44,11 @@ test('playback rate is clamped to the sample-wide audition range', () => {
   assert.equal(S.clampRate(1), 1);
   assert.equal(S.clampRate(0.5), 0.5);
   assert.equal(S.clampRate(0.1), 0.25);
-  assert.equal(S.clampRate(8), 4);
+  assert.equal(S.clampRate(8), 2);
+  assert.equal(S.clampRate(3), 2);
+  assert.deepEqual(S.normalizeSection({ start: 0.8, end: 0.2, loop: 1, rate: 9 }), {
+    start: 0.2, end: 0.8, loop: true, rate: 2,
+  });
   assert.equal(S.clampRate('nope'), 1);
   assert.equal(S.formatRate(0.5), '50%');
   assert.equal(S.formatRate(1), '100%');

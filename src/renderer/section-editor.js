@@ -14,8 +14,21 @@
   function clampRate(rate) {
     const n = Number(rate);
     if (!Number.isFinite(n)) return 1;
-    const c = Math.min(4, Math.max(0.25, n));
+    const c = Math.min(2, Math.max(0.25, n));
     return Math.round(c * 100) / 100;
+  }
+
+  // Persisted library boundaries. Speed stays inside the audition cap.
+  function normalizeSection(sec) {
+    if (!sec || typeof sec !== 'object') return null;
+    const start = clamp01(sec.start);
+    const end = clamp01(sec.end == null ? 1 : sec.end);
+    return {
+      start: Math.min(start, end),
+      end: Math.max(start, end),
+      loop: !!sec.loop,
+      rate: clampRate(sec.rate == null ? 1 : sec.rate),
+    };
   }
 
   function formatRate(rate) {
@@ -225,6 +238,7 @@
 
   root.SectionEditor = {
     clampRate,
+    normalizeSection,
     formatRate,
     minSpanFraction,
     sectionFromDrag,
