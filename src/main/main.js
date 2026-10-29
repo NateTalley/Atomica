@@ -119,7 +119,7 @@ const defaultParams = () => ({
   axes: { x: 'brightness', y: 'pitch' },
   colorBy: 'folder',
   sizeBy: 'loudness',
-  view: 'map',
+  view: 'list',
   volume: 0.9,
   maxDurationOn: true,
   maxDuration: 59,
@@ -1389,7 +1389,6 @@ app.whenReady().then(async () => {
     setTimeout(async () => {
       try {
         const pl = await win.webContents.executeJavaScript(`(async () => {
-          document.getElementById('sideTabPl').click();
           const names = [...document.querySelectorAll('#playlistList .pl-name')].map((n) => n.textContent);
           document.getElementById('newPlaylist').click();
           const dialogOpen = !document.getElementById('nameDialog').hidden;

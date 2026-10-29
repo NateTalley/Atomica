@@ -32,6 +32,11 @@ let filterText = '';
 let filterKind = new Set();
 let filterInstr = new Set();
 let filterGenre = new Set();
+let libraryRoots = [];
+let folderPrefix = '';
+const expandedDirs = new Set();
+const seenRoots = new Set();
+let focusPath = null;
 let playingIdx = -1;
 let listSort = { key: 'name', dir: 1 };
 let listShuffled = false;     // dice button: keep the current order random until re-sorted
@@ -93,7 +98,7 @@ async function init() {
   renderPlaylists();
   buildControls();
   syncControls();
-  setView(params.view || 'map', true);
+  setView(params.view || 'list', true);
 
   api.onDataset((ds) => { applyDataset(ds, false); });
   api.onPositions(({ positions }) => {
@@ -107,6 +112,12 @@ async function init() {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!$('nameDialog').hidden) return;
+    if ($('settingsPop') && !$('settingsPop').hidden) {
+      $('settingsPop').hidden = true;
+      $('settingsBtn').classList.remove('open');
+      $('settingsBtn').setAttribute('aria-expanded', 'false');
+      return;
+    }
     if (editingIdx >= 0) closeRowEditor();
     else if (params && params.view === 'editor') setView('list');
     else stopAudio();
@@ -156,6 +167,8 @@ function applyDataset(ds, computeIfNeeded) {
   rebuildTagColors();
   rebuildPlaylistPathSets();
   renderTagFilters();
+  renderExplorer();
+  syncNowPlaying();
   $('empty').hidden = ds.n > 0;
   starmap.setData(ds.n);
   restyle();
@@ -258,16 +271,30 @@ function buildControls() {
     renderTagFilters();
     restyle();
     refreshList(true);
+    updateStatus();
   });
   bindTagFilters();
+  bindSettings();
+  $('exploreBanner').addEventListener('click', () => setView('map'));
+  $('tagScrollUp').addEventListener('click', () => scrollTagCols(-36));
+  $('tagScrollDown').addEventListener('click', () => scrollTagCols(36));
+  $('npPlay').addEventListener('click', () => {
+    const idx = focusIndex();
+    if (idx < 0) return;
+    if (playingIdx === idx && paused) {
+      pauseTransport();
+      return;
+    }
+    if (playingIdx === idx && (currentSource || playPending)) return;
+    startPlayback(idx, 0);
+  });
+  $('npPause').addEventListener('click', () => pauseTransport());
 
   $('addFolder').addEventListener('click', async () => renderFolders(await api.pickFolder()));
   $('rescanBtn').addEventListener('click', () => api.rescan());
   $('useEmb').addEventListener('change', () => api.setEmbeddings($('useEmb').checked));
   bindFileMenu();
-  bindSideTabs();
 
-  $('viewMap').addEventListener('click', () => setView('map'));
   $('viewList').addEventListener('click', () => setView('list'));
   $('viewEditor').addEventListener('click', () => setView('editor'));
   $('viewShuffle').addEventListener('click', (e) => {
@@ -366,21 +393,36 @@ function applyView(view, initial) {
   params.view = view === 'list' || view === 'editor' ? view : 'map';
   const more = $('seMoreMenu');
   if (more && params.view !== 'editor') more.hidden = true;
-  $('viewMap').classList.toggle('active', params.view === 'map');
   $('viewList').classList.toggle('active', params.view === 'list');
   $('viewEditor').classList.toggle('active', params.view === 'editor');
   if (params.view !== 'list') closeRowEditor(false);
   $('map').hidden = params.view !== 'map';
   $('listWrap').hidden = params.view !== 'list';
+  syncBrowseChrome();
   updateStatusHints();
   if (!initial) persistParams();
   if (params.view === 'map') {
-    starmap.dirty = true;
-    starmap.fit();
+    requestAnimationFrame(() => {
+      starmap.dirty = true;
+      starmap.fit();
+    });
   } else if (params.view === 'list') {
     refreshList(true);
   }
   syncSectionChrome();
+}
+
+function syncBrowseChrome() {
+  const view = params && params.view;
+  const banner = $('exploreBanner');
+  const band = $('tagBand');
+  if (banner) banner.hidden = view !== 'list';
+  if (band) band.hidden = view === 'editor';
+  if (view === 'editor' && $('settingsPop') && !$('settingsPop').hidden) {
+    $('settingsPop').hidden = true;
+    $('settingsBtn').classList.remove('open');
+    $('settingsBtn').setAttribute('aria-expanded', 'false');
+  }
 }
 
 function updateStatusHints() {
@@ -437,26 +479,28 @@ function bindFileMenu() {
   });
 }
 
-function bindSideTabs() {
-  const tabs = [
-    ['sideTabMap', 'panelMap'],
-    ['sideTabType', 'panelType'],
-    ['sideTabPl', 'panelPl'],
-  ];
-  for (const [tab] of tabs) {
-    $(tab).addEventListener('click', () => {
-      for (const [t, panel] of tabs) {
-        $(t).classList.toggle('active', t === tab);
-        $(panel).hidden = t !== tab;
-      }
-    });
-  }
+function bindSettings() {
+  const btn = $('settingsBtn');
+  const pop = $('settingsPop');
+  const setOpen = (open) => {
+    pop.hidden = !open;
+    btn.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(pop.hidden);
+  });
+  document.addEventListener('click', (e) => {
+    if (!pop.hidden && !pop.contains(e.target) && e.target !== btn) setOpen(false);
+  });
 }
 
 function renderFolders(folders) {
+  libraryRoots = Array.isArray(folders) ? folders : [];
   const ul = $('folderList');
   ul.innerHTML = '';
-  folders.forEach((f, i) => {
+  libraryRoots.forEach((f, i) => {
     const li = document.createElement('li');
     const name = document.createElement('span');
     name.className = 'name';
@@ -470,6 +514,146 @@ function renderFolders(folders) {
     li.append(name, x);
     ul.appendChild(li);
   });
+  renderExplorer();
+}
+
+function normPath(p) {
+  return String(p || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function baseName(p) {
+  const parts = String(p || '').split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(p || '');
+}
+
+function longestRoot(prefix) {
+  let best = '';
+  for (const root of libraryRoots) {
+    const n = normPath(root);
+    if ((prefix === n || prefix.startsWith(n + '/')) && n.length > best.length) best = n;
+  }
+  return best;
+}
+
+function buildForest() {
+  const roots = libraryRoots.map((root) => ({
+    name: baseName(root),
+    path: normPath(root),
+    count: 0,
+    children: new Map(),
+  }));
+  if (!dataset) return roots;
+  for (let i = 0; i < dataset.n; i++) {
+    const original = String(dataset.paths[i]).replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+    const p = original.toLowerCase();
+    let root = null;
+    for (const candidate of roots) {
+      if ((p === candidate.path || p.startsWith(candidate.path + '/'))
+        && (!root || candidate.path.length > root.path.length)) root = candidate;
+    }
+    if (!root) continue;
+    root.count++;
+    if (p === root.path) continue;
+    const parts = original.slice(root.path.length + 1).split('/');
+    parts.pop();
+    let node = root;
+    let acc = root.path;
+    for (const part of parts) {
+      acc += '/' + part.toLowerCase();
+      let child = node.children.get(acc);
+      if (!child) {
+        child = { name: part, path: acc, count: 0, children: new Map() };
+        node.children.set(acc, child);
+      }
+      child.count++;
+      node = child;
+    }
+  }
+  return roots;
+}
+
+function selectFolder(prefix) {
+  folderPrefix = prefix || '';
+  if (folderPrefix) {
+    const root = longestRoot(folderPrefix);
+    if (root) {
+      expandedDirs.add(root);
+      let acc = root;
+      const rest = folderPrefix.slice(root.length + 1);
+      if (rest) {
+        for (const part of rest.split('/')) {
+          acc += '/' + part;
+          expandedDirs.add(acc);
+        }
+      }
+    }
+  }
+  renderExplorer();
+  restyle();
+  refreshList(true);
+  updateStatus();
+  if (params && params.view === 'map' && starmap) requestAnimationFrame(() => starmap.fit());
+}
+
+function renderTreeNode(node, depth) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tree-node';
+  const row = document.createElement('div');
+  row.className = 'tree-row' + (folderPrefix === node.path ? ' on' : '');
+  row.style.paddingLeft = `${depth * 14}px`;
+  const twist = document.createElement('button');
+  twist.type = 'button';
+  twist.className = 'tree-twist';
+  const hasKids = node.children.size > 0;
+  twist.textContent = hasKids ? (expandedDirs.has(node.path) ? '▾' : '▸') : '';
+  twist.disabled = !hasKids;
+  twist.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!hasKids) return;
+    if (expandedDirs.has(node.path)) expandedDirs.delete(node.path);
+    else expandedDirs.add(node.path);
+    renderExplorer();
+  });
+  const label = document.createElement('button');
+  label.type = 'button';
+  label.className = 'tree-name';
+  label.textContent = node.name;
+  label.title = node.path;
+  label.addEventListener('click', () => selectFolder(node.path));
+  const count = document.createElement('span');
+  count.className = 'tree-count';
+  count.textContent = node.count ? String(node.count) : '';
+  row.append(twist, label, count);
+  wrap.appendChild(row);
+  if (hasKids && expandedDirs.has(node.path)) {
+    const kids = [...node.children.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    for (const kid of kids) wrap.appendChild(renderTreeNode(kid, depth + 1));
+  }
+  return wrap;
+}
+
+function renderExplorer() {
+  const host = $('folderTree');
+  if (!host) return;
+  if (folderPrefix && !longestRoot(folderPrefix)) folderPrefix = '';
+  const forest = buildForest();
+  for (const node of forest) {
+    if (!seenRoots.has(node.path)) {
+      seenRoots.add(node.path);
+      expandedDirs.add(node.path);
+    }
+  }
+  const scroll = $('explorerScroll');
+  const top = scroll ? scroll.scrollTop : 0;
+  host.replaceChildren();
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'tree-all' + (folderPrefix ? '' : ' on');
+  all.textContent = 'All';
+  all.addEventListener('click', () => selectFolder(''));
+  host.appendChild(all);
+  for (const node of forest) host.appendChild(renderTreeNode(node, 0));
+  if (scroll) scroll.scrollTop = top;
 }
 
 function renderExcluded() {
@@ -681,6 +865,10 @@ function restyle() {
 
 function sampleVisible(i) {
   if (!dataset) return true;
+  if (folderPrefix) {
+    const p = normPath(dataset.paths[i]);
+    if (p !== folderPrefix && !p.startsWith(folderPrefix + '/')) return false;
+  }
   if (activePlaylistId) {
     const pl = playlists.find((p) => p.id === activePlaylistId);
     if (pl) {
@@ -752,9 +940,18 @@ function fillChipRow(el, counts, selected, order, labels) {
   if (heading && heading.tagName === 'H3') heading.hidden = empty;
 }
 
+function scrollTagCols(dy) {
+  for (const id of ['filterInstr', 'filterGenre']) {
+    const el = $(id);
+    if (el) el.scrollTop += dy;
+  }
+}
+
 function renderTagFilters() {
-  const kinds = tagCounts((i) => dataset.kinds && dataset.kinds[i]);
-  fillChipRow($('filterKind'), kinds, filterKind, ['oneshot', 'loop'], { oneshot: 'One-shot', loop: 'Loop' });
+  const oneshot = $('kindOneshot');
+  const loop = $('kindLoop');
+  if (oneshot) oneshot.classList.toggle('on', filterKind.has('oneshot'));
+  if (loop) loop.classList.toggle('on', filterKind.has('loop'));
   fillChipRow($('filterInstr'), tagCounts((i) => dataset.categories && dataset.categories[i]), filterInstr);
   fillChipRow($('filterGenre'), tagCounts((i) => dataset.genres && dataset.genres[i]), filterGenre);
   const active = filterKind.size + filterInstr.size + filterGenre.size;
@@ -762,8 +959,18 @@ function renderTagFilters() {
 }
 
 function bindTagFilters() {
+  for (const id of ['kindOneshot', 'kindLoop']) {
+    $(id).addEventListener('click', () => {
+      const key = $(id).dataset.kind;
+      if (filterKind.has(key)) filterKind.delete(key);
+      else filterKind.add(key);
+      renderTagFilters();
+      restyle();
+      refreshList(true);
+      updateStatus();
+    });
+  }
   const rows = [
-    ['filterKind', filterKind],
     ['filterInstr', filterInstr],
     ['filterGenre', filterGenre],
   ];
@@ -777,6 +984,7 @@ function bindTagFilters() {
       renderTagFilters();
       restyle();
       refreshList(true);
+      updateStatus();
     });
   }
 }
@@ -1363,7 +1571,7 @@ function handleHover(idx, mx, my) {
     lyricEl.textContent = lyrics;
   }
   tip.hidden = false;
-  const wrap = $('mapWrap');
+  const wrap = $('stage') || $('mapWrap');
   const tw = tip.offsetWidth, th = tip.offsetHeight;
   let x = mx + 16, y = my + 14;
   if (x + tw > wrap.clientWidth - 8) x = mx - tw - 12;
@@ -1398,6 +1606,7 @@ function clearPlayingHighlight() {
   playingIdx = -1;
   if (starmap) starmap.setPlaying(-1);
   if (params && params.view === 'list') renderListWindow();
+  syncNowPlaying();
 }
 
 function ensureAudio() {
@@ -1458,13 +1667,18 @@ function pauseAudio() {
   if (!dataset || !sectionEditPath) return;
   const idx = dataset.paths.indexOf(sectionEditPath);
   if (idx < 0 || playingIdx !== idx) return;
+  pauseTransport();
+}
+
+function pauseTransport() {
+  if (playingIdx < 0) return;
   if (paused) {
     if (!playBuf) return;
-    paused = false;
     beginSource(playBuf, playOffset, playGen, { resume: true });
+    syncNowPlaying();
     return;
   }
-  if (!currentSource && !playPending) return;
+  if (!currentSource) return;
   playOffset = currentPlaySec();
   playGen++;
   stopSource();
@@ -1473,6 +1687,7 @@ function pauseAudio() {
   paused = true;
   paintPlayingWave();
   syncTransportButtons();
+  syncNowPlaying();
 }
 
 function syncTransportButtons() {
@@ -1498,6 +1713,7 @@ function currentPlaySec() {
 
 function paintPlayingWave() {
   if (sectionEditPath && params && params.view === 'editor') drawSectionWave();
+  syncNowPlaying();
   if (!params || params.view !== 'list' || !$('listRows')) return;
   for (const row of $('listRows').children) {
     if (parseInt(row.dataset.idx, 10) === playingIdx) {
@@ -1620,6 +1836,7 @@ async function loadAudioBuffer(idx) {
 
 async function startPlayback(idx, frac, mode) {
   if (!dataset || idx < 0 || idx >= dataset.n) return;
+  setFocus(idx);
   paused = false;
   auditionMode = mode || null;
   queuedFrac = Math.min(1, Math.max(0, frac || 0));
@@ -1652,8 +1869,46 @@ async function startPlayback(idx, frac, mode) {
   }
 }
 
+function focusIndex() {
+  if (!dataset || !focusPath) return -1;
+  return dataset.paths.indexOf(focusPath);
+}
+
+function setFocus(idx) {
+  if (!dataset || idx < 0 || idx >= dataset.n) return;
+  focusPath = dataset.paths[idx];
+  syncNowPlaying();
+}
+
+function syncNowPlaying() {
+  const name = $('npName');
+  const canvas = $('npWave');
+  const play = $('npPlay');
+  const pause = $('npPause');
+  if (!name || !canvas || !play || !pause) return;
+  const idx = focusIndex();
+  if (idx < 0) {
+    name.textContent = 'Nothing selected';
+    name.title = '';
+    play.disabled = true;
+    pause.disabled = true;
+    play.classList.remove('on');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+  name.textContent = dataset.names[idx];
+  name.title = dataset.paths[idx];
+  play.disabled = false;
+  const active = playingIdx === idx && (currentSource || paused);
+  pause.disabled = !active;
+  play.classList.toggle('on', active && !paused && !playPending);
+  drawWaveform(canvas, idx);
+}
+
 function handleClick(idx) {
   if (!dataset || scrubbing) return;
+  setFocus(idx);
   if (playingIdx === idx && (currentSource || playPending || paused)) {
     stopAudio();
     return;
@@ -1764,7 +2019,7 @@ function updateStatus() {
   let txt = `${dataset.n.toLocaleString()} samples`;
   if (withEmb) txt += `  ·  ${withEmb.toLocaleString()} with AI embedding`;
   const lengthOn = params && params.maxDurationOn !== false;
-  if (filterText || lengthOn || filterKind.size || filterInstr.size || filterGenre.size) {
+  if (filterText || lengthOn || filterKind.size || filterInstr.size || filterGenre.size || folderPrefix) {
     let vis = 0;
     for (let i = 0; i < dataset.n; i++) if (sampleVisible(i)) vis++;
     txt += `  ·  ${vis.toLocaleString()} shown`;
@@ -2265,6 +2520,7 @@ async function confirmBoundaries() {
 
 async function openSectionEditor(idx) {
   if (!dataset || !Number.isFinite(idx) || idx < 0 || idx >= dataset.n) return;
+  setFocus(idx);
   const path = dataset.paths[idx];
   if (params && params.view === 'editor' && sectionEditPath === path) {
     syncSectionChrome();

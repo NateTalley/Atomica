@@ -51,17 +51,46 @@
       </div>
     </div>
 
-    <div id="sideTabs" class="tabs">
-      <button id="sideTabMap" class="tab active" type="button">Mapping</button>
-      <button id="sideTabType" class="tab" type="button">Type</button>
-      <button id="sideTabPl" class="tab" type="button">Playlists</button>
+    <div id="explorerScroll">
+      <div id="folderTree"></div>
     </div>
 
-    <div id="panelMap" class="side-panel">
+    <section id="playlistSection">
+      <h2>Playlists</h2>
+      <button id="newPlaylist" class="primary wide">+ New playlist</button>
+      <div id="playlistEmptyHint" class="hint">No playlists yet. Create one, or add samples from the map.</div>
+      <ul id="playlistList"></ul>
+      <div id="playlistDetail" hidden></div>
+    </section>
+
+    <div id="progressWrap" hidden>
+      <img id="progressLogo" src="logo-spin.gif" alt="" draggable="false" />
+      <div id="progressTrack"><div id="progressBar"></div></div>
+      <div id="progressText"></div>
+    </div>
+
+    <div id="nowPlaying">
+      <canvas id="npWave" width="640" height="144"></canvas>
+      <div id="npName">Nothing selected</div>
+      <div id="npTransport">
+        <button id="npPlay" type="button" disabled aria-label="Play">▶</button>
+        <button id="npPause" type="button" disabled aria-label="Pause">❚❚</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="mapWrap">
+    <div id="viewBar">
+      <button id="viewList" class="tab active" type="button">List</button>
+      <button id="viewEditor" class="tab" type="button">Editor</button>
+      <span class="view-spacer"></span>
+      <button id="settingsBtn" type="button" title="Map and display settings" aria-haspopup="true" aria-expanded="false">⚙</button>
+    </div>
+    <div id="settingsPop" hidden>
       <section>
         <div class="tabs">
-          <button id="tabSim" class="tab active">Similarity</button>
-          <button id="tabAxes" class="tab">Axes</button>
+          <button id="tabSim" class="tab active" type="button">Similarity</button>
+          <button id="tabAxes" class="tab" type="button">Axes</button>
         </div>
 
         <div id="simPanel">
@@ -79,7 +108,7 @@
           </label>
           <h3>Feature weights</h3>
           <div id="weights"></div>
-          <button id="applyMap" class="primary wide">Recompute map</button>
+          <button id="applyMap" class="primary wide" type="button">Recompute map</button>
         </div>
 
         <div id="axesPanel" hidden>
@@ -105,45 +134,27 @@
         </label>
       </section>
     </div>
-
-    <div id="panelType" class="side-panel" hidden>
-      <section>
-        <div id="tagFilters">
-          <h3>One-shot / Loop</h3>
-          <div id="filterKind" class="tag-row" hidden></div>
-          <h3>Instrument</h3>
-          <div id="filterInstr" class="tag-row" hidden></div>
-          <h3>Genre</h3>
-          <div id="filterGenre" class="tag-row" hidden></div>
-          <button id="clearFilters" hidden>Clear tag filters</button>
-        </div>
-      </section>
+    <button id="exploreBanner" type="button">Click here to explore your sound</button>
+    <div id="tagBand">
+      <button id="kindOneshot" class="kind-pill" type="button" data-kind="oneshot">1-shot</button>
+      <div class="tag-col">
+        <h3>Instrument</h3>
+        <div id="filterInstr" class="tag-row" hidden></div>
+      </div>
+      <button id="kindLoop" class="kind-pill" type="button" data-kind="loop">Loops</button>
+      <div class="tag-col">
+        <h3>Genre</h3>
+        <div id="filterGenre" class="tag-row" hidden></div>
+      </div>
+      <div class="tag-nudge">
+        <button id="tagScrollUp" type="button" aria-label="Scroll tags up">▴</button>
+        <button id="tagScrollDown" type="button" aria-label="Scroll tags down">▾</button>
+        <button id="clearFilters" type="button" hidden>Clear</button>
+      </div>
     </div>
-
-    <div id="panelPl" class="side-panel" hidden>
-      <section id="playlistSection">
-        <button id="newPlaylist" class="primary wide">+ New playlist</button>
-        <div id="playlistEmptyHint" class="hint">No playlists yet. Create one, or add samples from the map.</div>
-        <ul id="playlistList"></ul>
-        <div id="playlistDetail" hidden></div>
-      </section>
-    </div>
-
-    <div id="progressWrap" hidden>
-      <img id="progressLogo" src="logo-spin.gif" alt="" draggable="false" />
-      <div id="progressTrack"><div id="progressBar"></div></div>
-      <div id="progressText"></div>
-    </div>
-  </div>
-
-  <div id="mapWrap">
-    <div id="viewBar">
-      <button id="viewMap" class="tab active">Map</button>
-      <button id="viewList" class="tab">List</button>
-      <button id="viewEditor" class="tab">Editor</button>
-    </div>
-    <canvas id="map"></canvas>
-    <div id="listWrap" hidden>
+    <div id="stage">
+    <canvas id="map" hidden></canvas>
+    <div id="listWrap">
       <div id="listHead">
         <input type="checkbox" id="listSelectAll" class="list-head-check" title="Select all shown samples" />
         <span data-sort="waveform">Waveform</span>
@@ -196,6 +207,7 @@
           </div>
         </div>
       </div>
+    </div>
     </div>
   </div>
 
